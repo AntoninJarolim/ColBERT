@@ -8,9 +8,10 @@ from utility.utils.save_metadata import get_metadata_only
 
 
 class Examples:
-    def __init__(self, path=None, data=None, nway=None, provenance=None):
+    def __init__(self, path=None, data=None, nway=None, provenance=None, has_extractions=None):
         self.__provenance = provenance or path or Provenance()
         self.nway = nway
+        self.has_extractions = has_extractions
         self.path = path
         self.data = data or self._load_file(path)
 
@@ -22,6 +23,8 @@ class Examples:
 
     def _load_file(self, path):
         nway = self.nway + 1 if self.nway else self.nway
+        # Examples is one member longer with extractions
+        nway = nway + 1 if self.has_extractions else nway
         examples = []
 
         with open(path) as f:
@@ -68,12 +71,12 @@ class Examples:
         return output_path
 
     @classmethod
-    def cast(cls, obj, nway=None):
+    def cast(cls, obj, nway=None, has_extractions=None):
         if type(obj) is str:
-            return cls(path=obj, nway=nway)
+            return cls(path=obj, nway=nway, has_extractions=has_extractions)
 
         if isinstance(obj, list):
-            return cls(data=obj, nway=nway)
+            return cls(data=obj, nway=nway, has_extractions=has_extractions)
 
         if type(obj) is cls:
             assert nway is None, nway

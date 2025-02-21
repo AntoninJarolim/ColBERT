@@ -4,7 +4,12 @@ import torch
 
 from colbert.modeling.hf_colbert import class_factory
 from colbert.infra import ColBERTConfig
-from colbert.modeling.tokenization.utils import _split_into_batches, _sort_by_length, _insert_prefix_token
+from colbert.modeling.tokenization.utils import (_split_into_batches,
+                                                 _sort_by_length,
+                                                 _insert_prefix_token,
+                                                 _insert_prefix_list,
+                                                 get_skiplist,
+                                                 get_skiplist_ids)
 from colbert.parameters import DEVICE
 
 class DocTokenizer():
@@ -18,6 +23,10 @@ class DocTokenizer():
         self.D_marker_token, self.D_marker_token_id = self.config.doc_token, self.tok.convert_tokens_to_ids(self.config.doc_token_id)
         self.cls_token, self.cls_token_id = self.tok.cls_token, self.tok.cls_token_id
         self.sep_token, self.sep_token_id = self.tok.sep_token, self.tok.sep_token_id
+
+        self.all_special_tokens = torch.tensor(self.tok.all_special_ids
+                       + [self.D_marker_token_id]
+                       + get_skiplist_ids(get_skiplist(self.tok))).to(DEVICE)
 
     def tokenize(self, batch_text, add_special_tokens=False):
         assert type(batch_text) in [list, tuple], (type(batch_text))
@@ -48,15 +57,19 @@ class DocTokenizer():
     def tensorize(self, batch_text, bsize=None):
         assert type(batch_text) in [list, tuple], (type(batch_text))
 
-        obj = self.tok(batch_text, padding='longest', truncation='longest_first',
+        obj = self.tok(batch_text, padding='longest', truncation='longest_first', return_offsets_mapping=True,
                        return_tensors='pt', max_length=(self.doc_maxlen - 1)).to(DEVICE)
 
         ids = _insert_prefix_token(obj['input_ids'], self.D_marker_token_id)
         mask = _insert_prefix_token(obj['attention_mask'], 1)
+        offsets = _insert_prefix_list(obj['offset_mapping'], [0, 0])
 
         if bsize:
             ids, mask, reverse_indices = _sort_by_length(ids, mask, bsize)
             batches = _split_into_batches(ids, mask, bsize)
             return batches, reverse_indices
 
-        return ids, mask
+        mask_special = torch.isin(ids, self.all_special_tokens)
+        return ids, mask, offsets, mask_special
+
+

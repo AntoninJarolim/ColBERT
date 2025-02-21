@@ -1,11 +1,11 @@
 from colbert.infra.config.config import ColBERTConfig
+from colbert.modeling.tokenization.utils import get_skiplist
 from colbert.search.strided_tensor import StridedTensor
 from colbert.utils.utils import print_message, flatten
 from colbert.modeling.base_colbert import BaseColBERT
 from colbert.parameters import DEVICE
 
 import torch
-import string
 
 import os
 import pathlib
@@ -24,9 +24,7 @@ class ColBERT(BaseColBERT):
         ColBERT.try_load_torch_extensions(self.use_gpu)
 
         if self.colbert_config.mask_punctuation:
-            self.skiplist = {w: True
-                             for symbol in string.punctuation
-                             for w in [symbol, self.raw_tokenizer.encode(symbol, add_special_tokens=False)[0]]}
+            self.skiplist = get_skiplist(self.raw_tokenizer)
         self.pad_token = self.raw_tokenizer.pad_token_id
 
 
@@ -58,11 +56,17 @@ class ColBERT(BaseColBERT):
         Q_duplicated = Q.repeat_interleave(self.colbert_config.nway, dim=0).contiguous()
         scores = self.score(Q_duplicated, D, D_mask)
 
+        out = {}
         if self.colbert_config.use_ib_negatives:
             ib_loss = self.compute_ib_loss(Q, D, D_mask)
-            return scores, ib_loss
+            out['ib_loss'] = ib_loss
 
-        return scores
+        if self.colbert_config.return_max_scores:
+            scores, maxes = scores
+            out['max_scores'] = maxes
+
+        out['scores'] = scores
+        return out
 
     def compute_ib_loss(self, Q, D, D_mask):
         # TODO: Organize the code below! Quite messy.
@@ -173,8 +177,12 @@ def colbert_score(Q, D_padded, D_mask, config=ColBERTConfig()):
     assert Q.size(0) in [1, D_padded.size(0)]
 
     scores = D_padded @ Q.to(dtype=D_padded.dtype).permute(0, 2, 1)
+    colbert_reduce = colbert_score_reduce(scores, D_mask, config)
+    if config.return_max_scores:
+        max_scores = scores.max(dim=-1).values
+        return colbert_reduce, max_scores
 
-    return colbert_score_reduce(scores, D_mask, config)
+    return colbert_reduce
 
 
 def colbert_score_packed(Q, D_packed, D_lengths, config=ColBERTConfig()):

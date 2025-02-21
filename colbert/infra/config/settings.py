@@ -104,6 +104,7 @@ class ResourceSettings:
     triples: str = DefaultVal(None)
     collection: str = DefaultVal(None)
     queries: str = DefaultVal(None)
+    extractions: str = DefaultVal(None)
     index_name: str = DefaultVal(None)
 
 
@@ -155,6 +156,10 @@ class TrainingSettings:
     ignore_scores: bool = DefaultVal(False)
 
     model_name: str = DefaultVal(None)  # DefaultVal('bert-base-uncased')
+
+    return_max_scores: bool = DefaultVal(False)
+
+    extractions_lambda: int = DefaultVal(0.5)
 
 
 @dataclass

@@ -18,13 +18,18 @@ from colbert.modeling.reranker.electra import ElectraReranker
 from colbert.utils.utils import print_message
 from colbert.training.utils import print_progress, manage_checkpoints
 
+import wandb
 
-
-def train(config: ColBERTConfig, triples, queries=None, collection=None):
+def train(config: ColBERTConfig, triples, queries=None, collection=None, extracted_spans=None):
     config.checkpoint = config.checkpoint or 'bert-base-uncased'
 
     if config.rank < 1:
         config.help()
+
+    wandb.init(
+        project="llm2colbert-BCE",
+        config={} # Todo: add config
+    )
 
     random.seed(12345)
     np.random.seed(12345)
@@ -40,7 +45,7 @@ def train(config: ColBERTConfig, triples, queries=None, collection=None):
         if config.reranker:
             reader = RerankBatcher(config, triples, queries, collection, (0 if config.rank == -1 else config.rank), config.nranks)
         else:
-            reader = LazyBatcher(config, triples, queries, collection, (0 if config.rank == -1 else config.rank), config.nranks)
+            reader = LazyBatcher(config, triples, queries, collection, extracted_spans, (0 if config.rank == -1 else config.rank), config.nranks)
     else:
         raise NotImplementedError()
 
@@ -94,16 +99,20 @@ def train(config: ColBERTConfig, triples, queries=None, collection=None):
         for batch in BatchSteps:
             with amp.context():
                 try:
-                    queries, passages, target_scores = batch
-                    encoding = [queries, passages]
+                    queries, passages, target_scores, target_extractions = batch
+                    encoding = [queries, (passages[0], passages[1])]
                 except:
                     encoding, target_scores = batch
                     encoding = [encoding.to(DEVICE)]
 
-                scores = colbert(*encoding)
+                outs = colbert(*encoding)
+                scores = outs['scores']
 
                 if config.use_ib_negatives:
-                    scores, ib_loss = scores
+                    ib_loss = outs['ib_loss']
+
+                if config.return_max_scores:
+                    max_scores = outs['max_scores']
 
                 scores = scores.view(-1, config.nway)
 
@@ -114,6 +123,7 @@ def train(config: ColBERTConfig, triples, queries=None, collection=None):
 
                     log_scores = torch.nn.functional.log_softmax(scores, dim=-1)
                     loss = torch.nn.KLDivLoss(reduction='batchmean', log_target=True)(log_scores, target_scores)
+                    wandb.log({"distillation_loss": loss})
                 else:
                     loss = nn.CrossEntropyLoss()(scores, labels[:scores.size(0)])
 
@@ -121,8 +131,25 @@ def train(config: ColBERTConfig, triples, queries=None, collection=None):
                     if config.rank < 1:
                         print('\t\t\t\t', loss.item(), ib_loss.item())
 
+                    wandb.log({"ib_loss": ib_loss})
                     loss += ib_loss
 
+                if config.return_max_scores:
+                    # Extract scores for first (ie relevant) documents
+                    first_doc_ids = [b*config.nway for b in range(int(max_scores.size(0) / config.nway))]
+                    max_scores_first, doc_mask  = max_scores[first_doc_ids], ~passages[2][first_doc_ids]
+
+                    # mask documents all specials and skip tokens
+                    masked_scores, targets_masked = max_scores_first[doc_mask], target_extractions[doc_mask]
+
+                    ex_loss = config.extractions_lambda * nn.BCEWithLogitsLoss()(masked_scores, targets_masked)
+
+                    acc = ((nn.Sigmoid()(masked_scores) > 0.5).to(dtype=torch.float32) == targets_masked).float().mean()
+                    wandb.log({"extractions_loss": ex_loss, "extraction_accuracy": acc})
+
+                    loss = config.extractions_lambda * ex_loss + (1 - config.extractions_lambda) * loss
+
+                wandb.log({"total_loss": loss})
                 loss = loss / config.accumsteps
 
             if config.rank < 1:
