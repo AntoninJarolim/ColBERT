@@ -12,8 +12,11 @@ def tensorize_triples(query_tokenizer, doc_tokenizer, queries, passages, scores,
     D_ids, D_mask, offset_mapping, D_mask_special = doc_tokenizer.tensorize(passages)
     # D_ids, D_mask = D_ids.view(2, N, -1), D_mask.view(2, N, -1)
 
-    extraction_labels = mask_from_offsets(bsize, extractions, nway, offset_mapping, passages)
-    assert extraction_labels.shape == (bsize, D_ids.size(1))
+    extraction_labels = mask_from_offsets(extractions, nway, offset_mapping, passages)
+    assert torch.all(extraction_labels[0][D_mask[0]] == 0) , "Pad token extraction label == 1"
+    assert torch.all(extraction_labels[:, :2] == 0), "[CLS] or [D] token extraction label == 1"
+    assert extraction_labels.shape == (D_ids.size(0) / nway, D_ids.size(1)), \
+        "number of extractions and first documents differs"
 
 
     # # Compute max among {length of i^th positive, length of i^th negative} for i \in N
@@ -37,6 +40,8 @@ def tensorize_triples(query_tokenizer, doc_tokenizer, queries, passages, scores,
     else:
         score_batches = [[] for _ in doc_batches]
 
+    assert len(query_batches) == len(doc_batches) == len(score_batches) == len(extractions_batches)
+
     batches = []
     for Q, D, S, E in zip(query_batches, doc_batches, score_batches, extractions_batches):
         batches.append((Q, D, S, E))
@@ -44,10 +49,16 @@ def tensorize_triples(query_tokenizer, doc_tokenizer, queries, passages, scores,
     return batches
 
 
-def mask_from_offsets(bsize, extractions, nway, offset_mapping, passages):
-    # Get only first passage of each batch
-    offset_mapping = torch.cat([offset_mapping[i * nway][None] for i in range(bsize)], dim=0)
-    passages_first_pos = [passages[i * nway] for i in range(bsize)]
+def mask_from_offsets(extractions, nway, offset_mapping, passages) -> torch.Tensor:
+    collected_offsets = []
+    passages_first_pos = []
+
+    # Get only first passage of each sample
+    for i in range(0, len(passages), nway):
+        collected_offsets.append(offset_mapping[i][None])
+        passages_first_pos.append(passages[i])
+
+    offset_mapping = torch.cat(collected_offsets, dim=0)
 
     # find starts and ends of spans
     extractions = extract_positions(passages_first_pos, extractions)
