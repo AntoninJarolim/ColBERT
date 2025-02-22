@@ -1,4 +1,6 @@
 import time
+from os import environ
+
 import torch
 import random
 import torch.nn as nn
@@ -26,9 +28,10 @@ def train(config: ColBERTConfig, triples, queries=None, collection=None, extract
     if config.rank < 1:
         config.help()
 
+    is_debugging = 'debugging' if environ.get('DEBUGGIN_ON', False) else ''
     wandb.init(
-        project="llm2colbert-BCE",
-        config={} # Todo: add config
+        project=is_debugging + "llm2colbert-BCE",
+        config=config.__dict__,
     )
 
     random.seed(12345)
@@ -97,6 +100,7 @@ def train(config: ColBERTConfig, triples, queries=None, collection=None, extract
         this_batch_loss = 0.0
 
         for batch in BatchSteps:
+            logs = {}
             with amp.context():
                 try:
                     queries, passages, target_scores, target_extractions = batch
@@ -123,7 +127,7 @@ def train(config: ColBERTConfig, triples, queries=None, collection=None, extract
 
                     log_scores = torch.nn.functional.log_softmax(scores, dim=-1)
                     loss = torch.nn.KLDivLoss(reduction='batchmean', log_target=True)(log_scores, target_scores)
-                    wandb.log({"distillation_loss": loss})
+                    logs.update({"distillation_loss": loss.item()})
                 else:
                     loss = nn.CrossEntropyLoss()(scores, labels[:scores.size(0)])
 
@@ -131,12 +135,12 @@ def train(config: ColBERTConfig, triples, queries=None, collection=None, extract
                     if config.rank < 1:
                         print('\t\t\t\t', loss.item(), ib_loss.item())
 
-                    wandb.log({"ib_loss": ib_loss})
+                    logs.update({"ib_loss": ib_loss.item()})
                     loss += ib_loss
 
                 if config.return_max_scores:
                     # Extract scores for first (ie relevant) documents
-                    first_doc_ids = [b*config.nway for b in range(int(max_scores.size(0) / config.nway))]
+                    first_doc_ids = [b*config.nway for b in range(int(passages[0].size(0) / config.nway))]
                     max_scores_first, doc_mask  = max_scores[first_doc_ids], ~passages[2][first_doc_ids]
 
                     # mask documents all specials and skip tokens
@@ -144,12 +148,11 @@ def train(config: ColBERTConfig, triples, queries=None, collection=None, extract
 
                     ex_loss = config.extractions_lambda * nn.BCEWithLogitsLoss()(masked_scores, targets_masked)
 
-                    acc = ((nn.Sigmoid()(masked_scores) > 0.5).to(dtype=torch.float32) == targets_masked).float().mean()
-                    wandb.log({"extractions_loss": ex_loss, "extraction_accuracy": acc})
+                    logs.update(extraction_stats(ex_loss, masked_scores, targets_masked))
 
-                    loss = config.extractions_lambda * ex_loss + (1 - config.extractions_lambda) * loss
+                    loss =  (1 - config.extractions_lambda) * loss + config.extractions_lambda * ex_loss
 
-                wandb.log({"total_loss": loss})
+                wandb.log(dict({"total_loss": loss}, **logs))
                 loss = loss / config.accumsteps
 
             if config.rank < 1:
@@ -174,6 +177,26 @@ def train(config: ColBERTConfig, triples, queries=None, collection=None, extract
 
         return ckpt_path  # TODO: This should validate and return the best checkpoint, not just the last one.
 
+
+def extraction_stats(ex_loss, masked_scores, targets_masked):
+    probs = nn.Sigmoid()(masked_scores)
+    acc = ((probs > 0.5).to(dtype=torch.float32) == targets_masked).float().mean()
+
+    var, mean = torch.var_mean(probs[targets_masked.bool()])
+    var0, mean0 = torch.var_mean(probs[~targets_masked.bool()])
+    return {
+        "extractions_loss": ex_loss,
+        "extraction_accuracy": acc,
+
+        "mean_extraction_scores_1": mean,
+        "mean_extraction_scores_var+": mean + var,
+        "mean_extraction_scores_var-": mean - var,
+
+        "mean_extraction_scores_0": mean0,
+        "mean_extraction_scores_var0+": mean0 + var0,
+        "mean_extraction_scores_var0-": mean0 - var0,
+
+    }
 
 
 def set_bert_grad(colbert, value):
