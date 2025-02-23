@@ -83,7 +83,7 @@ class RunSettings:
 
     @property
     def path_(self):
-        return os.path.join(self.root, self.experiment, self.script_name_, self.name)
+        return os.path.join(self.root, self.experiment, 'train', self.name)
 
     @property
     def device_(self):
