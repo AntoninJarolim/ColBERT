@@ -187,13 +187,10 @@ def extraction_stats(ex_loss, masked_scores, targets_masked):
         "extraction_accuracy": acc,
 
         "mean_extraction_scores_1": mean,
-        "mean_extraction_scores_var+": mean + var,
-        "mean_extraction_scores_var-": mean - var,
+        "mean_extraction_scores_var": var,
 
         "mean_extraction_scores_0": mean0,
-        "mean_extraction_scores_var0+": mean0 + var0,
-        "mean_extraction_scores_var0-": mean0 - var0,
-
+        "mean_extraction_scores_var0": var0,
     }
 
 
