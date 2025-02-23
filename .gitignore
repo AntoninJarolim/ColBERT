@@ -25,4 +25,6 @@ __pycache__/
 .idea/
 wandb/
 log/
+# 'experiments/' for dir and 'experiments' for symlinks
 experiments/
+experiments
