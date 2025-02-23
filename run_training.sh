@@ -1,5 +1,9 @@
 #!/bin/bash
 
+
+# experiment name
+experiment=$1
+
 # Generate timestamp in readable format (YYYY-MM-DD_HH-MM-SS)
 timestamp=$(date +"%Y-%m-%d_%H-%M-%S")
 
