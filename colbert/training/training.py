@@ -22,6 +22,14 @@ from colbert.training.utils import print_progress, manage_checkpoints
 from colbert.infra.run import Run
 
 import wandb
+def init_wandb(config):
+    is_debugging = 'debugging' if environ.get('DEBUGGIN_ON', False) else ''
+    wandb.init(
+        project=is_debugging + "llm2colbert-BCE",
+        config=config.__dict__,
+    )
+    Run().config.name = wandb.run.name # Used as path to save checkpoints
+
 
 def train(config: ColBERTConfig, triples, queries=None, collection=None, extracted_spans=None):
     config.checkpoint = config.checkpoint or 'bert-base-uncased'
@@ -29,8 +37,7 @@ def train(config: ColBERTConfig, triples, queries=None, collection=None, extract
     if config.rank < 1:
         config.help()
 
-    wandb.config.update(**config.__dict__)
-    Run().config.name = wandb.run.name # Used as path to save checkpoints
+    init_wandb(config)
 
     random.seed(12345)
     np.random.seed(12345)
