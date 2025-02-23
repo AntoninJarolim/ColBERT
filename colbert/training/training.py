@@ -19,6 +19,7 @@ from colbert.modeling.reranker.electra import ElectraReranker
 
 from colbert.utils.utils import print_message
 from colbert.training.utils import print_progress, manage_checkpoints
+from colbert.infra.run import Run
 
 import wandb
 
@@ -28,11 +29,8 @@ def train(config: ColBERTConfig, triples, queries=None, collection=None, extract
     if config.rank < 1:
         config.help()
 
-    is_debugging = 'debugging' if environ.get('DEBUGGIN_ON', False) else ''
-    wandb.init(
-        project=is_debugging + "llm2colbert-BCE",
-        config=config.__dict__,
-    )
+    wandb.config.update(**config.__dict__)
+    Run().config.name = wandb.run.name # Used as path to save checkpoints
 
     random.seed(12345)
     np.random.seed(12345)
