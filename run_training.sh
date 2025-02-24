@@ -11,5 +11,5 @@ timestamp=$(date +"%Y-%m-%d_%H-%M-%S")
 logfile="train_log_$timestamp.log"
 
 # Run training and save output to the log file
-python train.py | tee "log/$logfile"
+python train.py --experiment $experiment  | tee "log/$logfile"
 
