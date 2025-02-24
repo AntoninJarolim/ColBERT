@@ -90,7 +90,7 @@ class Searcher:
                     )
                 )
             )
-            for query_idx, qid in tqdm(enumerate(qids))
+            for query_idx, qid in tqdm(enumerate(qids), desc="search_all", total=len(qids))
         ]
 
         data = {qid: val for qid, val in zip(queries.keys(), all_scored_pids)}
