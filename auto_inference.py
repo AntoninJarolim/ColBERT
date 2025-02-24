@@ -4,7 +4,6 @@ import os
 import subprocess
 import time
 import glob
-from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers.polling import PollingObserver
 
@@ -111,6 +110,9 @@ def main():
     args = parser.parse_args()
 
     root_dir = os.path.join('experiments', args.experiment_name, 'train')
+
+    if not os.path.exists(root_dir):
+        os.makedirs(root_dir)  # Directory for watching might not exist yet
 
     # Process any existing unprocessed checkpoints
     unprocessed = find_unprocessed_checkpoints(root_dir)
