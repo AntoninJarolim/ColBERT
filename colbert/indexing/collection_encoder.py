@@ -1,4 +1,5 @@
 import torch
+from tqdm import tqdm
 
 from colbert.infra.run import Run
 from colbert.utils.utils import print_message, batch
@@ -22,7 +23,10 @@ class CollectionEncoder:
             # Batch here to avoid OOM from storing intermediate embeddings on GPU.
             # Storing on the GPU helps with speed of masking, etc.
             # But ideally this batching happens internally inside docFromText.
-            for passages_batch in batch(passages, self.config.index_bsize * 50):
+            batching_size = self.config.index_bsize * 50
+            for passages_batch in tqdm(batch(passages, batching_size),
+                                       desc="Encoding passages",
+                                       total=len(passages) // batching_size):
                 embs_, doclens_ = self.checkpoint.docFromText(
                     passages_batch,
                     bsize=self.config.index_bsize,
