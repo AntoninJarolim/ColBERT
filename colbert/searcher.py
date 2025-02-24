@@ -128,4 +128,12 @@ class Searcher:
 
         pids, scores = self.ranker.rank(self.config, Q, filter_fn=filter_fn, pids=pids)
 
-        return pids[:k], list(range(1, k+1)), scores[:k]
+        if self.config.return_max_scores:
+            scores, max_scores = scores
+
+        pids_k, ranking_k, scores_k = pids[:k], list(range(1, k + 1)), scores[:k]
+
+        if self.config.return_max_scores:
+            return pids_k, ranking_k, scores_k, max_scores[:k]
+
+        return pids_k, ranking_k, scores_k

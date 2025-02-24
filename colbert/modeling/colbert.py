@@ -158,6 +158,16 @@ def colbert_score_reduce(scores_padded, D_mask, config: ColBERTConfig):
     return scores.sum(-1)
 
 
+def colbert_score_reduce_maxdocs(scores, D_mask, config):
+    colbert_reduce = colbert_score_reduce(scores, D_mask, config)
+
+    if config.return_max_scores:
+        max_scores = scores.max(dim=-1).values
+        return colbert_reduce, max_scores
+
+    return colbert_reduce
+
+
 # TODO: Wherever this is called, pass `config=`
 def colbert_score(Q, D_padded, D_mask, config=ColBERTConfig()):
     """
@@ -177,12 +187,8 @@ def colbert_score(Q, D_padded, D_mask, config=ColBERTConfig()):
     assert Q.size(0) in [1, D_padded.size(0)]
 
     scores = D_padded @ Q.to(dtype=D_padded.dtype).permute(0, 2, 1)
-    colbert_reduce = colbert_score_reduce(scores, D_mask, config)
-    if config.return_max_scores:
-        max_scores = scores.max(dim=-1).values
-        return colbert_reduce, max_scores
 
-    return colbert_reduce
+    return colbert_score_reduce_maxdocs(scores, D_mask, config)
 
 
 def colbert_score_packed(Q, D_packed, D_lengths, config=ColBERTConfig()):
@@ -205,6 +211,6 @@ def colbert_score_packed(Q, D_packed, D_lengths, config=ColBERTConfig()):
     if use_gpu or config.interaction == "flipr":
         scores_padded, scores_mask = StridedTensor(scores, D_lengths, use_gpu=use_gpu).as_padded_tensor()
 
-        return colbert_score_reduce(scores_padded, scores_mask, config)
+        return colbert_score_reduce_maxdocs(scores_padded, scores_mask, config)
     else:
         return ColBERT.segmented_maxsim(scores, D_lengths)

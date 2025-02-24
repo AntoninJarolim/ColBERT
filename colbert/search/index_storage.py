@@ -102,9 +102,14 @@ class IndexScorer(IndexLoader, CandidateGeneration):
                     return [], []
 
             scores, pids = self.score_pids(config, Q, pids, centroid_scores)
+            if config.return_max_scores:
+                scores, max_scores = scores
 
             scores_sorter = scores.sort(descending=True)
             pids, scores = pids[scores_sorter.indices].tolist(), scores_sorter.values.tolist()
+
+            if config.return_max_scores:
+                return pids, (scores, max_scores[scores_sorter.indices].tolist())
 
             return pids, scores
 
