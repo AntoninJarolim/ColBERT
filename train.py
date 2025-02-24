@@ -9,16 +9,16 @@ from colbert import Trainer
 
 def train(experiment):
     with Run().context(RunConfig(nranks=2, experiment=experiment)):
-        triples = 'data/examples_with_relevancy.jsonl'
-        queries = 'data/queries.train.tsv'
-        collection = 'data/collection.tsv'
-        extractions = 'data/extracted_relevancy.tsv'
+        triples_path = 'data/training/examples_with_relevancy.jsonl'
+        queries_path = 'data/training/queries.train.tsv'
+        collection_path = 'data/training/collection.tsv'
+        extractions_path = 'data/training/extracted_relevancy_800k_unique.tsv'
 
         config = ColBERTConfig(bsize=128, lr=1e-05, warmup=20_000, doc_maxlen=180, dim=128, attend_to_mask_tokens=False,
                                return_max_scores=True,
                                nway=64, accumsteps=32, similarity='cosine', use_ib_negatives=True)
-        trainer = Trainer(triples=triples, queries=queries, collection=collection,
-                          extractions=extractions, config=config)
+        trainer = Trainer(triples=triples_path, queries=queries_path, collection=collection_path,
+                          extractions=extractions_path, config=config)
 
         trainer.train(checkpoint='colbert-ir/colbertv1.9')  # or start from scratch, like `bert-base-uncased`
 

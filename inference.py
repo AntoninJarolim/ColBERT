@@ -45,8 +45,8 @@ def get_run_name(checkpoint):
 
 def inference_qrels_small_dataset(checkpoint, experiment):
     # Data
-    collection_path = 'data/collection.dev.small_50-25-25.tsv'
-    queries_path = 'data/queries.dev.small_ex_only.tsv'
+    collection_path = 'data/evaluation/collection.dev.small_50-25-25.tsv'
+    queries_path = 'data/evaluation/queries.dev.small_ex_only.tsv'
 
     # inference
     root_folder = 'experiments'
