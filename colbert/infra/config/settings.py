@@ -89,6 +89,10 @@ class RunSettings:
     def device_(self):
         return self.gpus_[self.rank % self.nranks]
 
+    @property
+    def is_debugging(self):
+        return os.environ.get('DEBUGGIN_ON', False)
+
 
 @dataclass
 class TokenizerSettings:

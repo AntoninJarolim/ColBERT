@@ -49,8 +49,9 @@ class Indexer:
         
         if len(deleted):
             if not force_silent:
-                print_message(f"#> Will delete {len(deleted)} files already at {directory} in 20 seconds...")
-                time.sleep(20)
+                sleep_time = 0 if Run().config.is_debugging else 20
+                print_message(f"#> Will delete {len(deleted)} files already at {directory} in {sleep_time} seconds...")
+                time.sleep(sleep_time)
 
             for filename in deleted:
                 os.remove(filename)
