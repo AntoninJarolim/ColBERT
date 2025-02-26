@@ -22,11 +22,14 @@ from colbert.training.utils import print_progress, manage_checkpoints
 from colbert.infra.run import Run
 
 import wandb
+
+
 def init_wandb(config):
     is_debugging = is_debugging = 'debugging' if Run().config.is_debugging else ''
     wandb.init(
         project=is_debugging + "llm2colbert-BCE",
         config=config.__dict__,
+        resume="allow"
     )
     Run().config.name = wandb.run.name # Used as path to save checkpoints
 
