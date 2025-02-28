@@ -25,7 +25,7 @@ import wandb
 
 
 def init_wandb(config):
-    is_debugging = is_debugging = 'debugging' if Run().config.is_debugging else ''
+    is_debugging = 'debugging' if Run().config.is_debugging else ''
     wandb.init(
         project=is_debugging + "llm2colbert-BCE",
         config=config.__dict__,
