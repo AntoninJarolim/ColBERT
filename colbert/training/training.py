@@ -31,7 +31,7 @@ def init_wandb(config):
         config=config.__dict__,
         resume="allow"
     )
-    Run().config.name = wandb.run.name # Used as path to save checkpoints
+    Run().config.name = wandb.run.name  # Used as path to save checkpoints
 
 
 def train(config: ColBERTConfig, triples, queries=None, collection=None, extracted_spans=None):
@@ -54,9 +54,11 @@ def train(config: ColBERTConfig, triples, queries=None, collection=None, extract
 
     if collection is not None:
         if config.reranker:
-            reader = RerankBatcher(config, triples, queries, collection, (0 if config.rank == -1 else config.rank), config.nranks)
+            reader = RerankBatcher(config, triples, queries, collection, (0 if config.rank == -1 else config.rank),
+                                   config.nranks)
         else:
-            reader = LazyBatcher(config, triples, queries, collection, extracted_spans, (0 if config.rank == -1 else config.rank), config.nranks)
+            reader = LazyBatcher(config, triples, queries, collection, extracted_spans,
+                                 (0 if config.rank == -1 else config.rank), config.nranks)
     else:
         raise NotImplementedError()
 
@@ -148,8 +150,8 @@ def train(config: ColBERTConfig, triples, queries=None, collection=None, extract
 
                 if config.return_max_scores:
                     # Extract scores for first (ie relevant) documents
-                    first_doc_ids = [b*config.nway for b in range(int(passages[0].size(0) / config.nway))]
-                    max_scores_first, doc_mask  = max_scores[first_doc_ids], ~passages[2][first_doc_ids]
+                    first_doc_ids = [b * config.nway for b in range(int(passages[0].size(0) / config.nway))]
+                    max_scores_first, doc_mask = max_scores[first_doc_ids], ~passages[2][first_doc_ids]
 
                     # mask documents all specials and skip tokens
                     masked_scores, targets_masked = max_scores_first[doc_mask], target_extractions[doc_mask]
@@ -158,7 +160,7 @@ def train(config: ColBERTConfig, triples, queries=None, collection=None, extract
 
                     logs.update(extraction_stats(ex_loss, masked_scores, targets_masked))
 
-                    loss =  (1 - config.extractions_lambda) * loss + config.extractions_lambda * ex_loss
+                    loss = (1 - config.extractions_lambda) * loss + config.extractions_lambda * ex_loss
 
                 wandb.log(dict({"total_loss": loss}, **logs))
                 loss = loss / config.accumsteps
@@ -177,24 +179,30 @@ def train(config: ColBERTConfig, triples, queries=None, collection=None, extract
 
         if config.rank < 1:
             print_message(batch_idx, train_loss)
-            manage_checkpoints(config, colbert, optimizer, batch_idx+1, savepath=None)
+            manage_checkpoints(config, colbert, optimizer, batch_idx + 1, savepath=None)
 
     if config.rank < 1:
         print_message("#> Done with all triples!")
-        ckpt_path = manage_checkpoints(config, colbert, optimizer, batch_idx+1, savepath=None, consumed_all_triples=True)
+        ckpt_path = manage_checkpoints(config, colbert, optimizer, batch_idx + 1, savepath=None,
+                                       consumed_all_triples=True)
 
         return ckpt_path  # TODO: This should validate and return the best checkpoint, not just the last one.
 
 
 def extraction_stats(ex_loss, masked_scores, targets_masked):
     probs = nn.Sigmoid()(masked_scores)
-    acc = ((probs > 0.5).to(dtype=torch.float32) == targets_masked).float().mean()
+    thresholded = (probs > 0.5).to(dtype=torch.float32)
+    acc = (thresholded == targets_masked).float().mean()
+    recall = thresholded[targets_masked.bool()].float().sum() / targets_masked.float().sum()
+    precision = thresholded[targets_masked.bool()].float().sum() / thresholded.sum()
 
     var, mean = torch.var_mean(probs[targets_masked.bool()])
     var0, mean0 = torch.var_mean(probs[~targets_masked.bool()])
     return {
         "extractions_loss": ex_loss,
         "extraction_accuracy": acc,
+        "recall": recall,
+        "precision": precision,
 
         "mean_extraction_prob": mean,
         "mean_extraction_prob_var": var,
