@@ -153,11 +153,12 @@ def train(config: ColBERTConfig, triples, queries=None, collection=None, extract
                     first_doc_ids = [b * config.nway for b in range(int(passages[0].size(0) / config.nway))]
                     max_scores_first, doc_mask = max_scores[first_doc_ids], ~passages[2][first_doc_ids]
 
+                    ex_loss_unreduced = nn.BCEWithLogitsLoss(reduction='none')(max_scores_first, target_extractions)
+                    ex_loss_unreduced = doc_mask * ex_loss_unreduced  # Set masked tokens scores to 0
+                    ex_loss = torch.mean(ex_loss_unreduced.sum(dim=-1) / doc_mask.sum(dim=-1))
+
                     # mask documents all specials and skip tokens
                     masked_scores, targets_masked = max_scores_first[doc_mask], target_extractions[doc_mask]
-
-                    ex_loss = config.extractions_lambda * nn.BCEWithLogitsLoss()(masked_scores, targets_masked)
-
                     logs.update(extraction_stats(ex_loss, masked_scores, targets_masked))
 
                     loss = (1 - config.extractions_lambda) * loss + config.extractions_lambda * ex_loss
