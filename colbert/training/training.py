@@ -137,7 +137,7 @@ def train(config: ColBERTConfig, triples, queries=None, collection=None, extract
 
                     log_scores = torch.nn.functional.log_softmax(scores, dim=-1)
                     loss = torch.nn.KLDivLoss(reduction='batchmean', log_target=True)(log_scores, target_scores)
-                    logs.update({"distillation_loss": loss.item()})
+                    logs['distillation_loss'] = loss.item()
                 else:
                     loss = nn.CrossEntropyLoss()(scores, labels[:scores.size(0)])
 
@@ -145,7 +145,7 @@ def train(config: ColBERTConfig, triples, queries=None, collection=None, extract
                     if config.rank < 1:
                         print('\t\t\t\t', loss.item(), ib_loss.item())
 
-                    logs.update({"ib_loss": ib_loss.item()})
+                    logs['ib_loss'] = ib_loss.item()
                     loss += ib_loss
 
                 if config.return_max_scores:
