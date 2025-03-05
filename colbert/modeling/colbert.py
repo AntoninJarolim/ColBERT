@@ -49,8 +49,8 @@ class ColBERT(BaseColBERT):
         cls.loaded_extensions = True
 
     def forward(self, Q, D):
-        Q = self.query(*Q)
-        D, D_mask = self.doc(*D, keep_dims='return_mask')
+        Q = self.query(*Q, normalize=False)
+        D, D_mask = self.doc(*D, keep_dims='return_mask', normalize=False)
 
         # Repeat each query encoding for every corresponding document.
         Q_duplicated = Q.repeat_interleave(self.colbert_config.nway, dim=0).contiguous()
@@ -70,6 +70,7 @@ class ColBERT(BaseColBERT):
 
     def compute_ib_loss(self, Q, D, D_mask):
         # TODO: Organize the code below! Quite messy.
+        Q, D = normalize_dim(Q, D, self.colbert_config.dim)
         scores = (D.unsqueeze(0) @ Q.permute(0, 2, 1).unsqueeze(1)).flatten(0, 1)  # query-major unsqueeze
 
         scores = colbert_score_reduce(scores, D_mask.repeat(Q.size(0), 1, 1), self.colbert_config)
@@ -86,7 +87,7 @@ class ColBERT(BaseColBERT):
 
         return torch.nn.CrossEntropyLoss()(scores, labels)
 
-    def query(self, input_ids, attention_mask):
+    def query(self, input_ids, attention_mask, normalize=True):
         input_ids, attention_mask = input_ids.to(self.device), attention_mask.to(self.device)
         Q = self.bert(input_ids, attention_mask=attention_mask)[0]
         Q = self.linear(Q)
@@ -94,9 +95,11 @@ class ColBERT(BaseColBERT):
         mask = torch.tensor(self.mask(input_ids, skiplist=[]), device=self.device).unsqueeze(2).float()
         Q = Q * mask
 
-        return torch.nn.functional.normalize(Q, p=2, dim=2)
+        if normalize:
+            Q = torch.nn.functional.normalize(Q, p=2, dim=2)
+        return Q
 
-    def doc(self, input_ids, attention_mask, keep_dims=True):
+    def doc(self, input_ids, attention_mask, keep_dims=True, normalize=True):
         assert keep_dims in [True, False, 'return_mask']
 
         input_ids, attention_mask = input_ids.to(self.device), attention_mask.to(self.device)
@@ -105,7 +108,9 @@ class ColBERT(BaseColBERT):
         mask = torch.tensor(self.mask(input_ids, skiplist=self.skiplist), device=self.device).unsqueeze(2).float()
         D = D * mask
 
-        D = torch.nn.functional.normalize(D, p=2, dim=2)
+        if normalize:
+            D = torch.nn.functional.normalize(D, p=2, dim=2)
+
         if self.use_gpu:
             D = D.half()
 
@@ -129,6 +134,12 @@ class ColBERT(BaseColBERT):
         mask = [[(x not in skiplist) and (x != self.pad_token) for x in d] for d in input_ids.cpu().tolist()]
         return mask
 
+
+def normalize_dim(Q, D, dim):
+    assert Q.shape[-1] == dim and D.shape[-1] == dim, (Q.shape, D.shape, dim)
+    Q = torch.nn.functional.normalize(Q, p=2, dim=-1)
+    D = torch.nn.functional.normalize(D, p=2, dim=-1)
+    return Q, D
 
 # TODO: In Query/DocTokenizer, use colbert.raw_tokenizer
 
@@ -158,11 +169,11 @@ def colbert_score_reduce(scores_padded, D_mask, config: ColBERTConfig):
     return scores.sum(-1)
 
 
-def colbert_score_reduce_maxdocs(scores, D_mask, config):
+def colbert_score_reduce_maxdocs(scores, scores_2, D_mask, config):
     colbert_reduce = colbert_score_reduce(scores, D_mask, config)
 
     if config.return_max_scores:
-        max_scores = scores.max(dim=-1).values
+        max_scores = scores_2.max(dim=-1).values
         return colbert_reduce, max_scores
 
     return colbert_reduce
@@ -186,9 +197,11 @@ def colbert_score(Q, D_padded, D_mask, config=ColBERTConfig()):
     assert D_padded.dim() == 3, D_padded.size()
     assert Q.size(0) in [1, D_padded.size(0)]
 
+    scores_2 = D_padded @ Q.to(dtype=D_padded.dtype).permute(0, 2, 1)
+    Q, D_padded = normalize_dim(Q, D_padded, config.dim)
     scores = D_padded @ Q.to(dtype=D_padded.dtype).permute(0, 2, 1)
 
-    return colbert_score_reduce_maxdocs(scores, D_mask, config)
+    return colbert_score_reduce_maxdocs(scores, scores_2, D_mask, config)
 
 
 def colbert_score_packed(Q, D_packed, D_lengths, config=ColBERTConfig()):
@@ -206,11 +219,13 @@ def colbert_score_packed(Q, D_packed, D_lengths, config=ColBERTConfig()):
     assert Q.dim() == 2, Q.size()
     assert D_packed.dim() == 2, D_packed.size()
 
+    scores_2 = D_packed @ Q.to(dtype=D_packed.dtype).T
+    D_packed, Q = normalize_dim(Q, D_packed, config.dim)
     scores = D_packed @ Q.to(dtype=D_packed.dtype).T
 
     if use_gpu or config.interaction == "flipr":
         scores_padded, scores_mask = StridedTensor(scores, D_lengths, use_gpu=use_gpu).as_padded_tensor()
 
-        return colbert_score_reduce_maxdocs(scores_padded, scores_mask, config)
+        return colbert_score_reduce_maxdocs(scores_padded, scores_2, scores_mask, config)
     else:
         return ColBERT.segmented_maxsim(scores, D_lengths)
