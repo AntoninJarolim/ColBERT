@@ -220,7 +220,7 @@ def colbert_score_packed(Q, D_packed, D_lengths, config=ColBERTConfig()):
     assert D_packed.dim() == 2, D_packed.size()
 
     scores_2 = D_packed @ Q.to(dtype=D_packed.dtype).T
-    D_packed, Q = normalize_dim(Q, D_packed, config.dim)
+    Q, D_packed = normalize_dim(Q, D_packed, config.dim)
     scores = D_packed @ Q.to(dtype=D_packed.dtype).T
 
     if use_gpu or config.interaction == "flipr":
