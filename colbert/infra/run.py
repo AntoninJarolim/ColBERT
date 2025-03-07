@@ -59,11 +59,22 @@ class Run(object):
         finally:
             self.__pop()
         
-    def open(self, path, mode='r'):
-        path = os.path.join(self.path_, path)
+    def open(self, path, mode='r', save_dir=None):
+        save_dir = 'train' if save_dir is None else save_dir
 
-        if not os.path.exists(self.path_):
-            create_directory(self.path_)
+        if save_dir == 'train':
+            path_prefix = self.path_
+        elif save_dir == 'indexes':
+            path_prefix = self.index_root_
+        elif save_dir == 'results':
+            path_prefix = self.results_root_
+        else:
+            raise AssertionError(save_dir)
+
+        path = os.path.join(path_prefix, path)
+
+        if not os.path.exists(path_prefix):
+            create_directory(path_prefix)
 
         if ('w' in mode or 'a' in mode) and not self.overwrite:
             assert not os.path.exists(path), (self.overwrite, path)

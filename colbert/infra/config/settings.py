@@ -21,6 +21,7 @@ class RunSettings:
     experiment: str = DefaultVal("default")
 
     index_root: str = DefaultVal(None)
+    results_root: str = DefaultVal(None)
     name: str = DefaultVal(timestamp(daydir=True))
 
     rank: int = DefaultVal(0)
@@ -53,7 +54,11 @@ class RunSettings:
 
     @property
     def index_root_(self):
-        return self.index_root or os.path.join(self.root, self.experiment, "indexes/")
+        return self.index_root or os.path.join(self.root, self.experiment, "indexes/", self.name)
+
+    @property
+    def results_root_(self):
+        return self.results_root or os.path.join(self.root, self.experiment, "results/", self.name)
 
     @property
     def script_name_(self):

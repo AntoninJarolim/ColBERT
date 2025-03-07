@@ -4,6 +4,8 @@ import os
 import subprocess
 import time
 import glob
+import traceback
+
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers.polling import PollingObserver
 
@@ -49,25 +51,37 @@ def run_inference(checkpoint_path, experiment_name):
         print("Waiting for GPU to be idle...")
         time.sleep(CHECK_INTERVAL)
 
+    # Run inference takes directory, not file
+    if checkpoint_path.endswith('model.safetensors'):
+        checkpoint_path = os.path.dirname(checkpoint_path)
+
     print(f"Running inference on checkpoint: {checkpoint_path}")
 
     try:
         results_dir = inference_qrels_small_dataset(checkpoint_path, experiment_name)
         # After successful inference, mark the checkpoint as processed
-        checkpoint_dir = os.path.dirname(checkpoint_path)
-        marker_file = create_marker_file_str(checkpoint_dir)
+        marker_file = create_marker_file_str(checkpoint_path)
         with open(marker_file, 'w') as f:
             f.write(results_dir)
-        print(f"Inference completed for {checkpoint_path}. Marker file created.")
+        print(f"Inference completed for '{checkpoint_path}' and marker file '{marker_file}' created.\n\n")
     except subprocess.CalledProcessError as e:
         print(f"Error running inference on {checkpoint_path}: {e}")
+    except Exception as e:
+        traceback.print_exc()
+        print(f"Unexpected error running inference on {checkpoint_path}: {e}")
 
 
 def create_marker_file_str(checkpoint_dir):
     return os.path.join(checkpoint_dir, 'inference_run_dir.txt')
 
 
-def find_unprocessed_checkpoints(root_dir):
+def has_marker_file(checkpoint):
+    cp_dir = os.path.dirname(checkpoint)
+    marker_file = create_marker_file_str(cp_dir)
+    return os.path.exists(marker_file)
+
+
+def find_unprocessed_checkpoints(root_dir, ignore_markfiles):
     """
     Recursively search for checkpoint files (model.safetensors) in a folder structure like:
     <root_dir>/.../checkpoints/<something>/model.safetensors
@@ -77,10 +91,8 @@ def find_unprocessed_checkpoints(root_dir):
     checkpoint_files = glob.glob(pattern, recursive=True)
     unprocessed = []
     for cp in checkpoint_files:
-        cp_dir = os.path.dirname(cp)
-        marker_file = create_marker_file_str(cp_dir)
-        if not os.path.exists(marker_file):
-            unprocessed.append(cp_dir)
+        if ignore_markfiles or not has_marker_file(cp):
+            unprocessed.append(os.path.dirname(cp))
     return sorted(unprocessed)  # Sort for consistent processing
 
 
@@ -96,17 +108,17 @@ class CheckpointEventHandler(FileSystemEventHandler):
 
     def on_created(self, event):
         if not event.is_directory and event.src_path.endswith('model.safetensors'):
-            cp_dir = os.path.dirname(event.src_path)
-            marker_file = os.path.join(cp_dir, 'inference_run_dir.txt')
-            if not os.path.exists(marker_file):
-                print(f"New checkpoint detected: {event.src_path}")
-                run_inference(event.src_path, self.experiment_name)
+            print(f"New checkpoint detected: {event.src_path}")
+            run_inference(os.path.dirname(event.src_path), self.experiment_name)
+        else:
+            print(f"Ignoring event: {event}")
 
 
 def main():
     parser = argparse.ArgumentParser(description='Automated Inference Runner')
-    parser.add_argument('experiment_name', type=str,
+    parser.add_argument('--experiment_name', type=str,
                         help='Name of current experiment to look for data in experiments/')
+    parser.add_argument('--ignore-markfiles', action='store_true',)
     args = parser.parse_args()
 
     root_dir = os.path.join('experiments', args.experiment_name, 'train')
@@ -115,8 +127,9 @@ def main():
         os.makedirs(root_dir)  # Directory for watching might not exist yet
 
     # Process any existing unprocessed checkpoints
-    unprocessed = find_unprocessed_checkpoints(root_dir)
-    print(f"Found {len(unprocessed)} unprocessed checkpoint(s).")
+    unprocessed = find_unprocessed_checkpoints(root_dir, args.ignore_markfiles)
+    print(f"Found {len(unprocessed)} unprocessed checkpoint(s):")
+    print('\n\t'.join(unprocessed))
     for cp_path in unprocessed:
         run_inference(cp_path, args.experiment_name)
 

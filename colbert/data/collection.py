@@ -1,4 +1,3 @@
-
 # Could be .tsv or .json. The latter always allows more customization via optional parameters.
 # I think it could be worth doing some kind of parallel reads too, if the file exceeds 1 GiBs.
 # Just need to use a datastructure that shares things across processes without too much pickling.
@@ -6,6 +5,7 @@
 
 import os
 import itertools
+import ujson
 
 from colbert.evaluation.loaders import load_collection
 from colbert.infra.run import Run
@@ -98,3 +98,47 @@ class Collection:
 
 
 # TODO: Look up path in some global [per-thread or thread-safe] list.
+
+class TranslateAbleCollection(Collection):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.translate_dict = self.try_load_translate_dict()
+        self.translate_dict_rev = {v: int(k) for k, v in self.translate_dict.items()}
+
+    def try_load_translate_dict(self):
+        """
+        Whole codebase works with
+        new_collection_pids -> default_collection_pids
+        """
+        # Path does not exist if loaded from data not from path
+        if self.path is None:
+            return
+
+        assert self.path[-4:] == '.tsv', f"Only tsv files are supported, got {self.path}"
+
+        # example:
+        # collection.dev.small_50-25-25.tsv and
+        # collection.dev.small_50-25-25.translate_dict.json
+        trans_dict_path = self.path[:-4] + '.translate_dict.json'
+        with open(trans_dict_path) as reader:
+            loaded = ujson.load(reader)
+            return loaded
+
+    def translate(self, pid):
+        return self.translate_dict[pid]
+
+    def translate_rev(self, pid):
+        return self.translate_dict_rev[pid]
+
+    def get_translated_pid(self, pid):
+        return self[self.translate_dict[pid]]
+
+    def get_translated_pid_rev(self, pid):
+        return self[self.translate_dict_rev[pid]]
+
+    @classmethod
+    def cast(cls, obj):
+        if type(obj) is Collection:
+            return cls(path=obj.path, data=obj.data)
+
+        raise AssertionError(f"obj has type {type(obj)} which is not compatible with cast()")
