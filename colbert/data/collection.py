@@ -103,7 +103,8 @@ class TranslateAbleCollection(Collection):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.translate_dict = self.try_load_translate_dict()
-        self.translate_dict_rev = {v: int(k) for k, v in self.translate_dict.items()}
+
+        self.translate_dict_rev = {int(v): int(k) for k, v in self.translate_dict.items()}
 
     def try_load_translate_dict(self):
         """
@@ -122,9 +123,13 @@ class TranslateAbleCollection(Collection):
         trans_dict_path = self.path[:-4] + '.translate_dict.json'
         with open(trans_dict_path) as reader:
             loaded = ujson.load(reader)
+            loaded = {int(k): int(v) for k, v in loaded.items()}
             return loaded
 
     def translate(self, pid):
+        """
+        Translates custom collection passage id to default collection pid.
+        """
         return self.translate_dict[pid]
 
     def translate_rev(self, pid):
