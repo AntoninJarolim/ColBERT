@@ -1,5 +1,6 @@
 import ujson
 from colbert.infra import Run
+import torch
 
 
 def _load_file(path):
@@ -46,16 +47,28 @@ class ExtractionResults:
 
     def __init__(self, data=None, metadata=None):
         self.data = data
-        self.metadata = metadata
+
+        self.metadata = {} if metadata is None else metadata
+        assert type(self.metadata) is dict, f"metadata initialized with type {type(self.metadata)}"
 
     @classmethod
     def cast(cls, obj):
         if type(obj) is list:
+            # Keep only the valid keys
             keep_list = [{key: member[key] for key in cls.valid_data_keys} for member in obj]
-            # todo: check that extraction_binary', 'max_scores' lens are the same
+
+            # Convert tensors to lists
+            for member in keep_list:
+                if type(member['extraction_binary'] is torch.Tensor):
+                    member['extraction_binary'] = member['extraction_binary'].tolist()
+                if type(member['max_scores'] is torch.Tensor):
+                    member['max_scores'] = member['max_scores'].tolist()
+
+            # check that extraction_binary', 'max_scores' lens are the same
             extractions_only = [member['extraction_binary'] for member in keep_list]
             max_scores_only = [member['max_scores'] for member in keep_list]
             assert all([len(x) == len(y) for x, y in zip(extractions_only, max_scores_only)])
+
             return cls(data=keep_list)
 
         if type(obj) is str:
