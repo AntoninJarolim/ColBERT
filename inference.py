@@ -79,7 +79,7 @@ def connect_running_wandb(run_name, config):
     api = wandb.Api()
 
     # Replace with your project name
-    project_name = "llm2colbert-BCE"
+    project_name = "eval-llm2colbert-BCE"
     entity = "jarolim-antonin-brno-university-of-technology"  # todo: put me to env/config
     steps = str(config['checkpoint_steps'])
     run_name = 'eval_' + run_name
