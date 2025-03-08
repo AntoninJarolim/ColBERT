@@ -40,7 +40,7 @@ def search_dataset(root_folder, queries_path, index_name):
                         config=config)
     queries = Queries(queries_path)
 
-    ranking = searcher.search_all(queries, k=100)
+    ranking = searcher.search_all(queries, k=3)
     max_ranking = searcher.search_extractions(queries,
                                               'data/evaluation/extracted_relevancy_qrels.dev.small.tsv',
                                               "data/evaluation/collection.dev.small_50-25-25.translate_dict.json")
@@ -81,7 +81,6 @@ def connect_running_wandb(run_name, config):
     # Replace with your project name
     project_name = "eval-llm2colbert-BCE"
     entity = "jarolim-antonin-brno-university-of-technology"  # todo: put me to env/config
-    steps = str(config['checkpoint_steps'])
     run_name = 'eval_' + run_name
 
     # Fetch all runs in the project
@@ -90,7 +89,7 @@ def connect_running_wandb(run_name, config):
     # Find the run with the specified name
     for run in runs:
         if run.name == run_name:
-            print(f"Run ID: {run.id}")
+            print(f"Resuming found run ID: {run.id}")
             wandb.init(project=project_name, id=run.id, resume="must")
 
     print("Starting a new eval run")

@@ -20,8 +20,8 @@ def evaluate_extractions(max_ranking_path, figure_id):
     with jsonlines.open(max_ranking_path) as reader:
         max_ranking_results = list(reader)
 
-        all_max_scores = [score for line in max_ranking_results for score in line['max_score']]
-        all_extractions = [score for line in max_ranking_results for score in line['extraction_masked']]
+        all_max_scores = [score for line in max_ranking_results for score in line['max_scores']]
+        all_extractions = [score for line in max_ranking_results for score in line['extraction_binary']]
 
         # Compute precision-recall curve
         precision, recall, _ = precision_recall_curve(
