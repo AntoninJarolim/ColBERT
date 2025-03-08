@@ -110,7 +110,7 @@ def train(config: ColBERTConfig, triples, queries=None, collection=None, extract
         this_batch_loss = 0.0
 
         for batch in BatchSteps:
-            logs = {}
+            batch_logs = {}
             with amp.context():
                 try:
                     queries, passages, target_scores, target_extractions = batch
@@ -137,7 +137,7 @@ def train(config: ColBERTConfig, triples, queries=None, collection=None, extract
 
                     log_scores = torch.nn.functional.log_softmax(scores, dim=-1)
                     loss = torch.nn.KLDivLoss(reduction='batchmean', log_target=True)(log_scores, target_scores)
-                    logs['distillation_loss'] = loss.item()
+                    batch_logs['distillation_loss'] = loss.item()
                 else:
                     loss = nn.CrossEntropyLoss()(scores, labels[:scores.size(0)])
 
@@ -145,7 +145,7 @@ def train(config: ColBERTConfig, triples, queries=None, collection=None, extract
                     if config.rank < 1:
                         print('\t\t\t\t', loss.item(), ib_loss.item())
 
-                    logs['ib_loss'] = ib_loss.item()
+                    batch_logs['ib_loss'] = ib_loss.item()
                     loss += ib_loss
 
                 if config.return_max_scores:
@@ -159,11 +159,12 @@ def train(config: ColBERTConfig, triples, queries=None, collection=None, extract
 
                     # mask documents all specials and skip tokens
                     masked_scores, targets_masked = max_scores_first[doc_mask], target_extractions[doc_mask]
-                    logs.update(extraction_stats(ex_loss, masked_scores, targets_masked))
+                    batch_logs.update(extraction_stats(ex_loss, masked_scores, targets_masked))
 
                     loss = (1 - config.extractions_lambda) * loss + config.extractions_lambda * ex_loss
 
-                wandb.log(dict({"total_loss": loss}, **logs))
+                if config.rank < 1:
+                    wandb.log(dict({"total_loss": loss}, **batch_logs))
                 loss = loss / config.accumsteps
 
             if config.rank < 1:
