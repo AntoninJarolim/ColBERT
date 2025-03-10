@@ -57,8 +57,8 @@ def run_inference(checkpoint_path, experiment_name):
 
     print(f"Running inference on checkpoint: {checkpoint_path}")
 
+    results_dir = inference_qrels_small_dataset(checkpoint_path, experiment_name)
     try:
-        results_dir = inference_qrels_small_dataset(checkpoint_path, experiment_name)
         # After successful inference, mark the checkpoint as processed
         marker_file = create_marker_file_str(checkpoint_path)
         with open(marker_file, 'w') as f:
@@ -91,8 +91,14 @@ def find_unprocessed_checkpoints(root_dir, ignore_markfiles):
     checkpoint_files = glob.glob(pattern, recursive=True)
     unprocessed = []
     for cp in checkpoint_files:
+        cp_dirname = os.path.dirname(cp)
+
+        if cp_dirname.split("/")[-1] == "colbert":
+            print(f"Skipping {cp} directory because batch step count is not there.")
+            continue
+
         if ignore_markfiles or not has_marker_file(cp):
-            unprocessed.append(os.path.dirname(cp))
+            unprocessed.append(cp_dirname)
     return sorted(unprocessed)  # Sort for consistent processing
 
 
