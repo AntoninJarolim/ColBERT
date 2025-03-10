@@ -15,26 +15,26 @@ from colbert.data import TranslateAbleCollection
 from colbert.utils.utils import print_message, file_tqdm
 
 
-def main(args_collection, args_output, args_qrels, args_ranking, args_annotate):
+def evaluate_ms_marco_ranking(collection_path, qrels_path, ranking_path, output_annotations=None, annotate=None):
     qid2positives = defaultdict(list)
     qid2ranking = defaultdict(list)
     qid2mrr = {}
     qid2recall = {depth: {} for depth in [50, 200, 1000, 5000, 10000]}
 
     collection = None
-    if args_collection:
-        collection = TranslateAbleCollection(path=args_collection)
+    if collection_path:
+        collection = TranslateAbleCollection(path=collection_path)
 
-    with open(args_qrels) as f:
-        print_message(f"#> Loading QRELs from {args_qrels} ..")
+    with open(qrels_path) as f:
+        print_message(f"#> Loading QRELs from {qrels_path} ..")
         for line in file_tqdm(f):
             qid, _, pid, label = map(int, line.strip().split())
             assert label == 1
 
             qid2positives[qid].append(pid)
 
-    with open(args_ranking) as f:
-        print_message(f"#> Loading ranked lists from {args_ranking} ..")
+    with open(ranking_path) as f:
+        print_message(f"#> Loading ranked lists from {ranking_path} ..")
 
         results = defaultdict(list)
         for line in file_tqdm(f):
@@ -106,10 +106,10 @@ def main(args_collection, args_output, args_qrels, args_ranking, args_annotate):
 
         dict_out[f"recall@{depth}"] = metric_sum / num_judged_queries
 
-    if args_annotate:
-        print_message(f"#> Writing annotations to {args_output} ..")
+    if annotate:
+        print_message(f"#> Writing annotations to {output_annotations} ..")
 
-        with open(args_output, 'w') as f:
+        with open(output_annotations, 'w') as f:
             for qid in tqdm.tqdm(qid2positives):
                 ranking = qid2ranking[qid]
                 positives = qid2positives[qid]
@@ -142,4 +142,8 @@ if __name__ == "__main__":
         args.output = f'{args.ranking}.annotated'
         assert not os.path.exists(args.output), args.output
 
-    main(args.collection, args.output, args.qrels, args.ranking, args.annotate)
+    evaluate_ms_marco_ranking(args.collection,
+                              args.qrels,
+                              args.ranking,
+                              annotate=args.annotate,
+                              output_annotations=args.output)
