@@ -4,9 +4,13 @@ import re
 
 import jsonlines
 import torch
+from matplotlib import pyplot as plt
 
 import wandb
 import numpy as np
+import pandas as pd
+import seaborn as sns
+
 from sklearn.metrics import precision_recall_curve
 
 from utility.evaluate.msmarco_passages import evaluate_ms_marco_ranking
@@ -57,27 +61,25 @@ def _evaluate_extractions(max_ranking_path, figure_id):
     all_scores = np.ones(len(all_max_scores))
     data_ones = _get_pr_data(all_extractions, all_scores)
 
-    table = wandb.Table(columns=["Recall", "Precision", "Type"])
-
-    for data, type_name in [(data_max, 0), (data_rnd, 1), (data_ones, 2)]:
-    # for data, type_name in [(data_max, "Max-Values"), (data_rnd, "Random"), (data_ones, "Select-All")]:
+    # Iterate over data types and store recall/precision values
+    df_data = []
+    for data, type_name in [(data_max, "Max-Values"), (data_rnd, "Random"), (data_ones, "Select-All")]:
         for recall, precision in data:
-            table.add_data(recall, precision, type_name)
+            df_data.append((recall, precision, type_name))
 
-    # Log the PR curve
-    figure_name = f"pr_curve_{figure_id}"
+    # Convert to DataFrame
+    df = pd.DataFrame(df_data, columns=["Recall", "Precision", "Type"])
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    sns.lineplot(data=df, x="Recall", y="Precision", hue="Type", ax=ax)
+    ax.set_title(f"PR Curve - {figure_id}")
+
     wandb.log({
-        figure_name: wandb.plot_table(
-            vega_spec_name="wandb/area-under-curve/v0",
-            data_table=table,
-            fields={"x": "Recall", "y": "Precision", "class": "Type"},
-            string_fields={
-                "title": f"Precision-Recall Curve Checkpoint {figure_id}",
-                "x-axis-title": "Recall",
-                "y-axis-title": "Precision",
-            },
-        )
+        f"pr_curve_{figure_id}": wandb.Image(fig)
     })
+
+
+    
 
 
 def _get_pr_data(all_extractions, all_max_scores):
