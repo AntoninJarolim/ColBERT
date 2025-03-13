@@ -8,6 +8,7 @@ from colbert.data import Collection, Queries, Ranking, TranslateAbleCollection
 from colbert.data.extractions import ExtractionResults, Extractions
 
 from colbert.modeling.checkpoint import Checkpoint
+from colbert.modeling.colbert import colbert_score
 from colbert.modeling.tokenization import tensorize_triples
 from colbert.search.index_storage import IndexScorer
 
@@ -150,24 +151,22 @@ class Searcher:
         self.collection = TranslateAbleCollection.cast(self.collection)
 
         data = []
-        for index, q_id in tqdm(enumerate(queries.keys()),
-                                desc="Finding max values for all queries",
-                                total=len(queries.keys())):
+        for index, q_id in enumerate(queries.keys()):
             Q_enc = Qs_enc[index].unsqueeze(0)  # Keep the batch dimension
 
             relevant_d_pids = extractions.get_psg_by_qid(q_id)
             relevant_pid = self.collection.translate_rev(relevant_d_pids)
             pids_rank = [relevant_pid]
-            scores, pids = self.ranker.score_pids(self.config, Q_enc, pids_rank, centroid_scores=None)
+            # scores, pids = self.ranker.score_pids(self.config, Q_enc, pids_rank, centroid_scores=None)
 
-            assert pids == pids_rank, (pids, pids_rank)
+            # assert pids == pids_rank, (pids, pids_rank)
 
-            _, max_scores = scores  # Ranking scores are not needed
+            # _, max_scores = scores  # Ranking scores are not needed
             data.append(
                 {
                     'q_id': q_id,
                     'psg_id': relevant_pid,
-                    'max_scores': max_scores.squeeze(),
+                    # 'max_scores': max_scores.squeeze(),
                     'query': queries[q_id],
                     'passage': self.collection[relevant_pid],
                     'extraction_spans': extractions[(q_id, relevant_d_pids)],
@@ -178,9 +177,26 @@ class Searcher:
         extraction_spans_all = [d['extraction_spans'] for d in data]
         passages = [d['passage'] for d in data]
         queries_text = [d['query'] for d in data]
-        bin_extractions = self.get_all_extractions(extraction_spans_all,
-                                                   passages,
-                                                   queries_text)
+        bin_extractions, doc_ids, q_ids = self.get_all_extractions(extraction_spans_all,
+                                                                   passages,
+                                                                   queries_text)
+
+        # Each doc is different length, therefore we cannot do D @ Q, but need to compute scores one by one
+        for i, (q_id, doc_id) in tqdm(enumerate(zip(q_ids, doc_ids)),
+                                      desc="Finding max values for all queries",
+                                      total=len(queries.keys())):
+            q_id = q_id.unsqueeze(0)
+            doc_id = doc_id.unsqueeze(0)
+
+            q_mask = torch.ones_like(q_id).bool()
+            Q = self.checkpoint.query(q_id, q_mask, normalize=False)
+
+            d_mask = torch.ones_like(doc_id).bool()
+            D = self.checkpoint.doc(doc_id, d_mask, normalize=False)
+
+            _, max_scores = colbert_score(Q, D, d_mask, self.config)
+            data[i]['max_scores'] = max_scores.squeeze()
+            # todo pair with extractions binary here and asserts lens
 
         # Pair extractions with max scores while filtering scores masked by colbert
         max_scores = [d['max_scores'] for d in data]
@@ -207,19 +223,23 @@ class Searcher:
             extraction_spans_all,
             batch_size,
             nway)
-        _, (doc_ids, doc_ids_pad_masks, _), _, binary_extractions = triplets[0]  # only one batch
-        doc_ids_pad_masks = doc_ids_pad_masks.bool().cpu()
+        (q_ids, _), (doc_ids, doc_ids_pad_masks, _), _, binary_extractions = triplets[0]  # only one batch
+
+        # Create colbert mask by masking doc_ids by skiplist and padding
         doc_ids_colbert_mask = self.checkpoint.mask(doc_ids, skiplist=self.checkpoint.skiplist)
+        doc_ids_pad_masks = doc_ids_pad_masks.bool().cpu()
         doc_ids_colbert_mask = [torch.tensor(mask)[pad_mask]
                                 for mask, pad_mask
                                 in zip(doc_ids_colbert_mask, doc_ids_pad_masks)]
-        binary_extractions = [bin_ex[pad_mask]
-                              for bin_ex, pad_mask
-                              in zip(binary_extractions, doc_ids_pad_masks)]
-        binary_extractions = [bin_ex[colbert_mask]
-                              for bin_ex, colbert_mask
-                              in zip(binary_extractions, doc_ids_colbert_mask)]
-        return binary_extractions
+
+        def mask_pad_colbert(tensor):
+            return [t[pad_mask][colbert_mask]
+                    for t, pad_mask, colbert_mask
+                    in zip(tensor, doc_ids_pad_masks, doc_ids_colbert_mask)]
+
+        binary_extractions = mask_pad_colbert(binary_extractions)
+        doc_ids = mask_pad_colbert(doc_ids)
+        return binary_extractions, doc_ids, q_ids
 
 
 def pair_extractions_scores(bin_extractions, max_scores):
