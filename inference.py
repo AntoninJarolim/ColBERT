@@ -159,7 +159,7 @@ def inference_qrels_small_dataset(
         'max_ranking_path': max_ranking_path
     }
     connect_running_wandb(run_name)
-    wandb.config.update(log_config)
+    wandb.config.update(log_config, allow_val_change=True)
 
     eval_dir = os.path.dirname(max_ranking_path)
     assert eval_dir == os.path.dirname(ranking_path)
