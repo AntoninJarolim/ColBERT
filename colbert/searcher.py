@@ -152,21 +152,12 @@ class Searcher:
 
         data = []
         for index, q_id in enumerate(queries.keys()):
-            Q_enc = Qs_enc[index].unsqueeze(0)  # Keep the batch dimension
-
             relevant_d_pids = extractions.get_psg_by_qid(q_id)
             relevant_pid = self.collection.translate_rev(relevant_d_pids)
-            pids_rank = [relevant_pid]
-            # scores, pids = self.ranker.score_pids(self.config, Q_enc, pids_rank, centroid_scores=None)
-
-            # assert pids == pids_rank, (pids, pids_rank)
-
-            # _, max_scores = scores  # Ranking scores are not needed
             data.append(
                 {
                     'q_id': q_id,
                     'psg_id': relevant_pid,
-                    # 'max_scores': max_scores.squeeze(),
                     'query': queries[q_id],
                     'passage': self.collection[relevant_pid],
                     'extraction_spans': extractions[(q_id, relevant_d_pids)],
