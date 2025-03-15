@@ -40,11 +40,11 @@ def search_dataset(root_folder, queries_path, index_name):
                         config=config)
     queries = Queries(queries_path)
 
-    ranking = searcher.search_all(queries, k=3)
     max_ranking = searcher.search_extractions(queries,
                                               'data/evaluation/extracted_relevancy_qrels.dev.small.tsv',
                                               "data/evaluation/collection.dev.small_50-25-25.translate_dict.json")
 
+    ranking = searcher.search_all(queries, k=3)
     max_ranking_path = max_ranking.save(f"{index_name}.extraction_scores.jsonl")
     ranking_path = ranking.save(f"{index_name}.ranking.tsv")
 
