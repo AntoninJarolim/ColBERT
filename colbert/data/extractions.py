@@ -43,7 +43,9 @@ class Extractions:
 
 
 class ExtractionResults:
-    valid_data_keys = ['extraction_binary', 'max_scores', 'psg_id', 'q_id']
+    valid_data_keys = ['psg_id', 'q_id',
+                       'extraction_binary', 'extraction_full',
+                       'max_scores', 'max_scores_full']
 
     def __init__(self, data=None, metadata=None):
         self.data = data
@@ -59,10 +61,9 @@ class ExtractionResults:
 
             # Convert tensors to lists
             for member in keep_list:
-                if type(member['extraction_binary'] is torch.Tensor):
-                    member['extraction_binary'] = member['extraction_binary'].tolist()
-                if type(member['max_scores'] is torch.Tensor):
-                    member['max_scores'] = member['max_scores'].tolist()
+                for key in cls.valid_data_keys:
+                    if type(member[key]) is torch.Tensor:
+                        member[key] = member[key].tolist()
 
             # check that extraction_binary', 'max_scores' lens are the same
             extractions_only = [member['extraction_binary'] for member in keep_list]
@@ -72,7 +73,8 @@ class ExtractionResults:
             return cls(data=keep_list)
 
         if type(obj) is str:
-            raise NotImplementedError("Loading from file not supported yet.")
+            data, metadata = cls.open_jsonl(obj)
+            return cls(data=data, metadata=metadata)
 
         assert False, f"obj has type {type(obj)} which is not compatible with cast()"
 
@@ -89,3 +91,22 @@ class ExtractionResults:
             }
             ujson.dump(meta, f, indent=4)
         return f_data.name
+
+    @classmethod
+    def open_jsonl(cls, path):
+        data = []
+        with open(path) as reader:
+            for line in reader:
+                data.append(ujson.loads(line.strip()))
+
+        path_meta = path + '.meta'
+        with open(path_meta) as reader:
+            metadata = ujson.load(reader)
+
+        return data, metadata
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        return self.data[idx]

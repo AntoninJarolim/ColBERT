@@ -1,5 +1,6 @@
 import os
 import torch
+import math
 
 from tqdm import tqdm
 from typing import Union
@@ -16,8 +17,6 @@ from colbert.infra.provenance import Provenance
 from colbert.infra.run import Run
 from colbert.infra.config import ColBERTConfig, RunConfig
 from colbert.infra.launcher import print_memory_stats
-
-import time
 
 TextQueries = Union[str, 'list[str]', 'dict[int, str]', Queries]
 
@@ -146,7 +145,6 @@ class Searcher:
     def search_extractions(self, queries, extractions, translate_dict_path):
         assert self.config.return_max_scores, "return_max_scores must be set to True for search_extractions."
 
-        Qs_enc = self.encode_queries(queries)
         extractions = Extractions.cast(extractions)
         self.collection = TranslateAbleCollection.cast(self.collection)
 
@@ -168,38 +166,53 @@ class Searcher:
         extraction_spans_all = [d['extraction_spans'] for d in data]
         passages = [d['passage'] for d in data]
         queries_text = [d['query'] for d in data]
-        bin_extractions, doc_ids, q_ids = self.get_all_extractions(extraction_spans_all,
-                                                                   passages,
-                                                                   queries_text)
+        extractions_data = self.get_all_extractions(extraction_spans_all,
+                                                    passages,
+                                                    queries_text)
 
         # Each doc is different length, therefore we cannot do D @ Q, but need to compute scores one by one
-        for i, (q_id, doc_id) in tqdm(enumerate(zip(q_ids, doc_ids)),
-                                      desc="Finding max values for all queries",
-                                      total=len(queries.keys())):
-            q_id = q_id.unsqueeze(0)
-            doc_id = doc_id.unsqueeze(0)
+        for i in tqdm(range(len(extractions_data['q_ids'])), desc="Finding max values for all queries"):
 
-            q_mask = torch.ones_like(q_id).bool()
-            Q = self.checkpoint.query(q_id, q_mask, normalize=False)
+            # Get all data for this sample
+            q_id = extractions_data['q_ids'][i]
+            doc_id = extractions_data['doc_ids_masked'][i]
+            doc_ids_colbert_mask = extractions_data['doc_ids_colbert_mask'][i]
+            extractions_masked = extractions_data['binary_extractions_masked'][i]
+            extractions = extractions_data['binary_extractions'][i]
 
-            d_mask = torch.ones_like(doc_id).bool()
-            D = self.checkpoint.doc(doc_id, d_mask, normalize=False)
+            max_scores = self.extract_max_scores(doc_id, q_id)
 
-            _, max_scores = colbert_score(Q, D, d_mask, self.config)
-            data[i]['max_scores'] = max_scores.squeeze()
-            # todo pair with extractions binary here and asserts lens
+            assert len(max_scores) == len(extractions_masked)
 
-        # Pair extractions with max scores while filtering scores masked by colbert
-        max_scores = [d['max_scores'] for d in data]
-        pairs = pair_extractions_scores(bin_extractions, max_scores)
+            # Create full length max_scores tensor
+            max_scores_viz = torch.full_like(doc_ids_colbert_mask, torch.nan, dtype=max_scores.dtype)
+            max_scores_viz[doc_ids_colbert_mask] = max_scores
+            max_scores_viz = [(None if math.isnan(x) else x) for x in max_scores_viz.tolist()]  # replace nan -> None
 
-        # Add to data
-        for pair, d in zip(pairs, data):
-            d['extraction_binary'] = pair[0]
-            d['max_scores'] = pair[1]
+            assert len(extractions) == len(max_scores_viz)
+
+            data[i]['max_scores'] = max_scores
+            data[i]['extraction_binary'] = extractions_masked
+
+            data[i]['max_scores_full'] = max_scores_viz
+            data[i]['extraction_full'] = extractions
 
         max_scoring = ExtractionResults.cast(data)
         return max_scoring
+
+    def extract_max_scores(self, doc_id, q_id):
+        q_id = q_id.unsqueeze(0)
+        doc_id = doc_id.unsqueeze(0)
+
+        q_mask = torch.ones_like(q_id).bool()
+        Q = self.checkpoint.query(q_id, q_mask, normalize=False)
+
+        d_mask = torch.ones_like(doc_id).bool()
+        D = self.checkpoint.doc(doc_id, d_mask, normalize=False)
+
+        _, max_scores = colbert_score(Q, D, d_mask, self.config)
+        max_scores = max_scores.cpu()
+        return max_scores.squeeze()
 
     def get_all_extractions(self, extraction_spans_all, passages, queries_text):
         nway = 1  # Because there is only one passage per query
@@ -223,21 +236,21 @@ class Searcher:
                                 for mask, pad_mask
                                 in zip(doc_ids_colbert_mask, doc_ids_pad_masks)]
 
-        def mask_pad_colbert(tensor):
-            return [t[pad_mask][colbert_mask]
-                    for t, pad_mask, colbert_mask
-                    in zip(tensor, doc_ids_pad_masks, doc_ids_colbert_mask)]
+        def apply_masks(tensor, masks):
+            out = []
+            for i, t in enumerate(tensor):
+                for mask in masks:
+                    t = t[mask[i]]
+                out.append(t)
+            return out
 
-        binary_extractions = mask_pad_colbert(binary_extractions)
-        doc_ids = mask_pad_colbert(doc_ids)
-        return binary_extractions, doc_ids, q_ids
+        all_masks = [doc_ids_pad_masks, doc_ids_colbert_mask]
+        out = dict(
+            doc_ids_colbert_mask=doc_ids_colbert_mask,
+            binary_extractions_masked=apply_masks(binary_extractions, all_masks),
+            binary_extractions=apply_masks(binary_extractions, [doc_ids_pad_masks]),
+            doc_ids_masked=apply_masks(doc_ids, all_masks),
+            q_ids=q_ids,
+        )
 
-
-def pair_extractions_scores(bin_extractions, max_scores):
-    pairs_out = []
-    for max_score, bin_ext in zip(max_scores, bin_extractions):
-        len_max_scores = len(max_score)
-        len_bin_ext = len(bin_ext)
-        assert len_max_scores == len_bin_ext, (len_max_scores, len_bin_ext)
-        pairs_out.append((bin_ext, max_score))
-    return pairs_out
+        return out
