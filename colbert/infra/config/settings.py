@@ -96,7 +96,7 @@ class RunSettings:
 
     @property
     def is_debugging(self):
-        return os.environ.get('DEBUGGIN_ON', False)
+        return os.environ.get('DEBUG', False)
 
 
 @dataclass
