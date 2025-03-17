@@ -14,11 +14,13 @@ def train(experiment, ngpus, ex_lambda=1.0):
         collection_path = 'data/training/collection.tsv'
         extractions_path = 'data/training/extracted_relevancy_800k_unique.tsv'
 
-        one_bsize = 128
+        one_bsize = 64 
         config = ColBERTConfig(bsize=one_bsize * ngpus, lr=1e-05, warmup=20_000,
                                doc_maxlen=180, dim=128, attend_to_mask_tokens=False,
-                               return_max_scores=True, extractions_lambda=ex_lambda,
                                nway=64, accumsteps=2, similarity='cosine', use_ib_negatives=True)
+=======
+                               nway=64, accumsteps=16, similarity='cosine', use_ib_negatives=True)
+>>>>>>> b519a4d (Sync while training)
         trainer = Trainer(triples=triples_path, queries=queries_path, collection=collection_path,
                           extractions=extractions_path, config=config)
 

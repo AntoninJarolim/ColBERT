@@ -1,6 +1,5 @@
 #!/bin/bash
 
-
 # experiment name
 experiment=$1
 
@@ -10,6 +9,8 @@ timestamp=$(date +"%Y-%m-%d_%H-%M-%S")
 # Define log filename
 logfile="train_log_$timestamp.log"
 
+./start_syncing.sh &
+
 # Run training and save output to the log file
-python train.py --experiment $experiment  | tee "log/$logfile"
+python train.py --ngpus 4 --experiment $experiment  | tee "log/$logfile"
 

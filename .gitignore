@@ -1,4 +1,4 @@
-/experiments/
+experiments/
 /checkpoints/
 /data/
 /logs/
@@ -21,6 +21,8 @@ __pycache__/
 # Other
 .vscode
 *.tsv
+slurm*
+wandb.env
 
 build/
 .idea/
