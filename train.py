@@ -7,7 +7,7 @@ from colbert.infra.config import ColBERTConfig, RunConfig
 from colbert import Trainer
 
 
-def train(experiment, ngpus, ex_lambda=1.0):
+def train(experiment, ngpus, ex_lambda):
     with Run().context(RunConfig(nranks=ngpus, experiment=experiment)):
         triples_path = 'data/training/examples_with_relevancy.jsonl'
         queries_path = 'data/training/queries.train.tsv'
