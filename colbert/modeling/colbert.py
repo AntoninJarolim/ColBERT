@@ -173,7 +173,7 @@ def colbert_score_reduce_maxdocs(scores, scores_2, D_mask, config):
     colbert_reduce = colbert_score_reduce(scores, D_mask, config)
 
     if config.return_max_scores:
-        max_scores = scores_2.max(dim=-1).values
+        max_scores = scores_2.max(dim=-1)
         return colbert_reduce, max_scores
 
     return colbert_reduce

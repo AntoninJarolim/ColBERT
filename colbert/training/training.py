@@ -5,6 +5,7 @@ import torch
 import random
 import torch.nn as nn
 import numpy as np
+from jsonlines import jsonlines
 
 from transformers import AdamW, get_linear_schedule_with_warmup
 from colbert.infra import ColBERTConfig
@@ -68,6 +69,7 @@ def train(config: ColBERTConfig, triples, queries=None, collection=None, extract
         colbert = ElectraReranker.from_pretrained(config.checkpoint)
 
     colbert = colbert.to(DEVICE)
+    colbert = torch.compile(colbert)
     colbert.train()
 
     colbert = torch.nn.parallel.DistributedDataParallel(colbert, device_ids=[config.rank],
@@ -102,6 +104,7 @@ def train(config: ColBERTConfig, triples, queries=None, collection=None, extract
 
     #     reader.skip_to_batch(start_batch_idx, checkpoint['arguments']['bsize'])
 
+    st = StatsTracker()
     for batch_idx, BatchSteps in zip(range(start_batch_idx, config.maxsteps), reader):
         if (warmup_bert is not None) and warmup_bert <= batch_idx:
             set_bert_grad(colbert, True)
@@ -149,9 +152,12 @@ def train(config: ColBERTConfig, triples, queries=None, collection=None, extract
                     loss += ib_loss
 
                 if config.return_max_scores:
+                    max_scores, max_scores_i = max_scores
+
                     # Extract scores for first (ie relevant) documents
                     first_doc_ids = [b * config.nway for b in range(int(passages[0].size(0) / config.nway))]
-                    max_scores_first, doc_mask = max_scores[first_doc_ids], ~passages[2][first_doc_ids]
+                    max_scores_first, max_scores_i_f = max_scores[first_doc_ids], max_scores_i[first_doc_ids]
+                    doc_mask = ~passages[2][first_doc_ids]
 
                     ex_loss_unreduced = nn.BCEWithLogitsLoss(reduction='none')(max_scores_first, target_extractions)
                     ex_loss_unreduced = doc_mask * ex_loss_unreduced  # Set masked tokens scores to 0
@@ -160,6 +166,7 @@ def train(config: ColBERTConfig, triples, queries=None, collection=None, extract
                     # mask documents all specials and skip tokens
                     masked_scores, targets_masked = max_scores_first[doc_mask], target_extractions[doc_mask]
                     batch_logs.update(extraction_stats(ex_loss, masked_scores, targets_masked))
+                    st.save_idx(max_scores_i_f, doc_mask, queries[1])
 
                     loss = (1 - config.extractions_lambda) * loss + config.extractions_lambda * ex_loss
 
@@ -191,7 +198,35 @@ def train(config: ColBERTConfig, triples, queries=None, collection=None, extract
         return ckpt_path  # TODO: This should validate and return the best checkpoint, not just the last one.
 
 
+class StatsTracker:
+    def __init__(self):
+        self.save_jsonl_path = 'max_scores_indices.jsonl'
+        self.q_toks_f = []
+
+    def save_idx(self, max_scores_indices, mask, q_mask_tokens):
+        assert max_scores_indices.dim() == 2
+
+        nr_tokens_q = q_mask_tokens.size(1)
+
+        x = [torch.bincount(x[m], minlength=nr_tokens_q).cpu().tolist() for x, m in zip(max_scores_indices, mask)]
+        x = [{'max_score_index_bin_counts': x, 'is_q_mask': q_mask.cpu().tolist()}
+             for x, q_mask in zip(x, q_mask_tokens)]
+
+        for y in x:
+            len_max = len(y['max_score_index_bin_counts'])
+            len_q = len(y['is_q_mask'])
+            assert len_max == len_q, (len_max, len_q)
+
+        self.q_toks_f.extend(x)
+
+        if len(self.q_toks_f) % 100 == 0:
+            with jsonlines.open(self.save_jsonl_path, 'a') as f:
+                f.write_all(self.q_toks_f)
+            self.q_toks_f = []
+
+
 def extraction_stats(ex_loss, masked_scores, targets_masked):
+    # Compute extractions stats
     probs = nn.Sigmoid()(masked_scores)
     thresholded = (probs > 0.5).to(dtype=torch.float32)
     acc = (thresholded == targets_masked).float().mean()
