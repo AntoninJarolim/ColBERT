@@ -1,10 +1,13 @@
+from collections import defaultdict
+
 import torch
 import streamlit as st
 import os
 import glob
 
 # Allows having script in a folder
-import sys; sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+import sys;
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from colbert.data import Collection, Queries
 from colbert.data.extractions import ExtractionResults
@@ -14,10 +17,16 @@ from colbert.modeling.tokenization import DocTokenizer
 from visualizations.viz_utils import create_highlighted_passage
 
 st.set_page_config(layout="wide")
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Layout config
-_, data_column, _ = st.columns([2, 6, 2])
+# Default data configuration
+set_data = {
+    "start_data_id": 0,
+    "nr_show_data": 10,
+    "gt_label_colour": "#2222DD",
+    "selected_checkpoints": None,
+    "nr_columns": 1,
+}
+
 
 # DATA
 collection_path = "data/evaluation/collection.dev.small_50-25-25.tsv"
@@ -57,23 +66,28 @@ def find_all_checkpoints(root_dir):
             'inference_path': inference_path,
             'checkpoint_path': file_dir,
             'steps': steps,
-            'time_added': time_added
+            'time_added': time_added,
+            'exp_run':  f"{exp}/{run_name}"
         }
 
-    # Sort by time added
-    return dict(sorted(checkpoints.items(), key=lambda item: item[1]['time_added'], reverse=True))
+    # Find latest run time for each exp_run
+    times = dict()
+    for k, v in checkpoints.items():
+        if v['exp_run'] not in times:
+            times[v['exp_run']] = v['time_added']
+        if v['time_added'] > times[v['exp_run']]:
+            times[v['exp_run']] = v['time_added']
+
+    # assign this latest run time to all checkpoints in the same exp_run
+    for k, v in checkpoints.items():
+        checkpoints[k]['time_added'] = times[v['exp_run']]
+
+    # Sort by both time added and steps
+    return dict(sorted(checkpoints.items(), key=lambda item: (item[1]['time_added'], item[1]['steps']), reverse=True))
 
 
 collection, queries = cache_collection(collection_path, queries_path)
 checkpoints = find_all_checkpoints('experiments/')
-
-# Default data configuration
-set_data = {
-    "start_data_id": 0,
-    "nr_show_data": 10,
-    "gt_label_colour": "#2222DD",
-    "checkpoint": None
-}
 
 # CONFIGURATION SIDEBAR
 with st.sidebar:
@@ -82,13 +96,11 @@ with st.sidebar:
     set_data["start_data_id"] = st.selectbox('First id to show:',
                                              range(len(collection)), key="start_data_id")
 
-    set_data["checkpoint"] = st.selectbox('Model checkpoint:',
-                                          list(checkpoints.keys()), key="checkpoint")
-
     "### Visualization settings"
     set_data["nr_show_data"] = st.selectbox('Number of passages to show:',
                                             [10, 20, 50, 100], key="dialogue_index")
-
+    set_data["nr_columns"] = st.selectbox('Number of columns:',
+                                          [1, 2, 3, 4, 5], key="nr_columns")
 
 @st.cache_resource
 def cache_init_tokenizer(checkpoint):
@@ -157,12 +169,28 @@ def gradient_test():
     show_one_example(-1, tokens, gt_1, max_scores_full, additional_text="Test gradient gt 1")
 
 
-with data_column:
-    if set_data["checkpoint"] is not None:
-        current_cp = checkpoints[set_data["checkpoint"]]
+def init_layout(nr_columns):
+    # Layout config
+    if nr_columns == 1:
+        col_setting = [3, 3, 3]
+        _, cols, _ = st.columns(col_setting)
+        cols = [cols]
+    else:
+        col_setting = [1] * nr_columns
+        cols = st.columns(col_setting)
+    return cols
+
+
+data_columns = init_layout(set_data["nr_columns"])
+for col_idx, data_column in enumerate(data_columns):
+    with data_column:
+        cp = st.selectbox(
+            'Model checkpoint:',
+            list(checkpoints.keys()), key=f"checkpoint{col_idx}"
+        )
+
+        current_cp = checkpoints[cp]
 
         viz_data = get_viz_data(current_cp['inference_path'], current_cp['steps'])
         doc_tokenizer = cache_init_tokenizer(current_cp['checkpoint_path'])
         show_examples(set_data["start_data_id"], set_data["nr_show_data"], viz_data, collection, queries, doc_tokenizer)
-    else:
-        st.write("No checkpoint selected")
