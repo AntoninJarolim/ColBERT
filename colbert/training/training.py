@@ -138,6 +138,7 @@ def train(config: ColBERTConfig, triples, queries=None, collection=None, extract
                     loss = nn.CrossEntropyLoss()(scores, labels[:scores.size(0)])
 
                 if config.use_ib_negatives:
+                    ib_loss = outs['ib_loss']
                     if config.rank < 1:
                         print('\t\t\t\t', loss.item(), ib_loss.item())
 
@@ -145,7 +146,7 @@ def train(config: ColBERTConfig, triples, queries=None, collection=None, extract
                     loss += ib_loss
 
                 if config.return_max_scores:
-                    max_scores, max_scores_i = max_scores
+                    max_scores, max_scores_i = outs['max_scores']
 
                     # Extract scores for first (ie relevant) documents
                     first_doc_ids = [b * config.nway for b in range(int(passages[0].size(0) / config.nway))]
