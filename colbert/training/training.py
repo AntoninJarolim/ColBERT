@@ -68,7 +68,8 @@ def train(config: ColBERTConfig, triples, queries=None, collection=None, extract
         colbert = ElectraReranker.from_pretrained(config.checkpoint)
 
     colbert = colbert.to(DEVICE)
-    colbert = torch.compile(colbert)
+    if not Run().config.is_debugging:
+        colbert = torch.compile(colbert)
     colbert.train()
 
     colbert = torch.nn.parallel.DistributedDataParallel(colbert, device_ids=[config.rank],
@@ -123,13 +124,6 @@ def train(config: ColBERTConfig, triples, queries=None, collection=None, extract
 
                 outs = colbert(*encoding)
                 scores = outs['scores']
-
-                if config.use_ib_negatives:
-                    ib_loss = outs['ib_loss']
-
-                if config.return_max_scores:
-                    max_scores = outs['max_scores']
-
                 scores = scores.view(-1, config.nway)
 
                 if len(target_scores) and not config.ignore_scores:
