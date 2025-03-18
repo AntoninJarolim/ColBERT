@@ -40,8 +40,7 @@ def train(config: ColBERTConfig, triples, queries=None, collection=None, extract
 
     if config.rank < 1:
         config.help()
-
-    init_wandb(config)
+        init_wandb(config)
 
     random.seed(12345)
     np.random.seed(12345)
