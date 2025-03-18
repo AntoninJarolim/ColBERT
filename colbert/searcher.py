@@ -211,6 +211,7 @@ class Searcher:
         D = self.checkpoint.doc(doc_id, d_mask, normalize=False)
 
         _, max_scores = colbert_score(Q, D, d_mask, self.config)
+        max_scores = max_scores.values
         max_scores = max_scores.cpu()
         return max_scores.squeeze()
 

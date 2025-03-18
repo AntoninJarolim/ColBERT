@@ -104,6 +104,7 @@ class IndexScorer(IndexLoader, CandidateGeneration):
             scores, pids = self.score_pids(config, Q, pids, centroid_scores)
             if config.return_max_scores:
                 scores, max_scores = scores
+                max_scores = max_scores.values
 
             scores_sorter = scores.sort(descending=True)
             pids, scores = pids[scores_sorter.indices].tolist(), scores_sorter.values.tolist()
