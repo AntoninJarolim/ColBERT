@@ -7,7 +7,7 @@ from colbert.infra.config import ColBERTConfig, RunConfig
 from colbert import Trainer
 
 
-def train(experiment, ngpus, ex_lambda, accumsteps):
+def train(experiment, ngpus, ex_lambda, accumsteps, checkpoint):
     with Run().context(RunConfig(nranks=ngpus, experiment=experiment)):
         triples_path = 'data/training/examples_with_relevancy.jsonl'
         queries_path = 'data/training/queries.train.tsv'
@@ -22,7 +22,7 @@ def train(experiment, ngpus, ex_lambda, accumsteps):
         trainer = Trainer(triples=triples_path, queries=queries_path, collection=collection_path,
                           extractions=extractions_path, config=config)
 
-        trainer.train(checkpoint='colbert-ir/colbertv1.9')  # or start from scratch, like `bert-base-uncased`
+        trainer.train(checkpoint=checkpoint)  # or start from scratch, like `bert-base-uncased`
 
 
 def arg_parse():
@@ -32,10 +32,12 @@ def arg_parse():
     parser.add_argument('--ngpus', type=int, default=2, help='Number of GPUs')
     parser.add_argument('--ex_lambda', type=float, default=0.5, help='Extractions lambda')
     parser.add_argument('--accumsteps', type=int, default=2, help='Number of gradient accumulation steps')
+    parser.add_argument('--checkpoint', type=str,
+                        default='colbert-ir/colbertv1.9', help='Checkpoint to start training from')
     return parser.parse_args()
 
 
 if __name__ == '__main__':
     args = arg_parse()
-    train(args.experiment, args.ngpus, args.ex_lambda, args.accumsteps)
+    train(args.experiment, args.ngpus, args.ex_lambda, args.accumsteps, args.checkpoint)
 
