@@ -52,6 +52,10 @@ class BaseColBERT(torch.nn.Module):
         return self.model.linear
 
     @property
+    def linear_max(self):
+        return self.model.linear_max
+
+    @property
     def score_scaler(self):
         return self.model.score_scaler
 

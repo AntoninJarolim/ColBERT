@@ -147,7 +147,6 @@ class TrainingSettings:
 
     resume: bool = DefaultVal(False)
 
-    ## NEW:
     warmup: int = DefaultVal(None)
 
     warmup_bert: int = DefaultVal(None)
@@ -169,6 +168,8 @@ class TrainingSettings:
     return_max_scores: bool = DefaultVal(False)
 
     extractions_lambda: float = DefaultVal(0.5)
+
+    add_max_linear: bool = DefaultVal(False)
 
 
 @dataclass

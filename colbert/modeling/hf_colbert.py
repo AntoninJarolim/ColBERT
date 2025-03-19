@@ -102,6 +102,8 @@ def class_factory(name_or_path):
             self.config = config
             self.dim = colbert_config.dim
             self.linear = nn.Linear(config.hidden_size, colbert_config.dim, bias=False)
+            if colbert_config.add_max_linear:
+                self.linear_max = nn.Linear(config.hidden_size, colbert_config.dim, bias=False)
             setattr(self,self.base_model_prefix, model_class_object(config))
 
             # if colbert_config.relu:

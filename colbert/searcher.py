@@ -205,13 +205,16 @@ class Searcher:
         doc_id = doc_id.unsqueeze(0)
 
         q_mask = torch.ones_like(q_id).bool()
-        Q = self.checkpoint.query(q_id, q_mask, normalize=False)
-
+        if not self.config.attend_to_mask_tokens:
+            q_mask = (q_id != self.checkpoint.query_tokenizer.mask_token_id)
         d_mask = torch.ones_like(doc_id).bool()
-        D = self.checkpoint.doc(doc_id, d_mask, normalize=False)
 
-        _, max_scores = colbert_score(Q, D, d_mask, self.config)
-        max_scores = max_scores.values
+        D = (doc_id, d_mask)
+        Q = (q_id, q_mask)
+
+        out = self.checkpoint(Q, D)
+
+        max_scores = out['max_scores'].values
         max_scores = max_scores.cpu()
         return max_scores.squeeze()
 
