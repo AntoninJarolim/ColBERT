@@ -17,5 +17,4 @@ set -a; source .env; set +a
 wandb login
 
 # experiment name
-experiment='retrieval-off'
-./run_training.sh $experiment
+./run_training.sh 
