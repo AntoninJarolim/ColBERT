@@ -32,7 +32,7 @@ def index_dataset(checkpoint, collection_path, root_folder, nbits, index_name):
                   collection=collection_path)
 
 
-def search_dataset(root_folder, queries_path, index_name):
+def search_dataset(root_folder, queries_path, extraction_path, index_name):
     config = ColBERTConfig(
         root=root_folder
     )
@@ -40,9 +40,7 @@ def search_dataset(root_folder, queries_path, index_name):
                         config=config)
     queries = Queries(queries_path)
 
-    max_ranking = searcher.search_extractions(queries,
-                                              'data/evaluation/extracted_relevancy_qrels.dev.small.tsv',
-                                              "data/evaluation/collection.dev.small_50-25-25.translate_dict.json")
+    max_ranking = searcher.search_extractions(queries, extraction_path)
 
     ranking = searcher.search_all(queries, k=3)
     max_ranking_path = max_ranking.save(f"{index_name}.extraction_scores.jsonl")
@@ -96,12 +94,48 @@ def connect_running_wandb(run_name):
     wandb.init(project=project_name, name=run_name)
 
 
-def inference_qrels_small_dataset(
+def inference_checkpoint_all_datasets(checkpoint, experiment):
+    datasets = {
+        'official_dev_small': {
+            'collection_path': 'data/evaluation/collection.dev.small_50-25-25.tsv',
+            'queries_path': 'data/evaluation/queries.dev.small_ex_only.tsv',
+            'extraction_path': 'data/evaluation/extracted_relevancy_qrels.dev.small.tsv',
+            'qrels_path': 'data/evaluation/qrels.dev.small_ex_only.tsv',
+        },
+        '35_samples': {
+            'collection_path': 'data/evaluation/collection.35_sample_dataset.tsv',
+            'queries_path': 'daqueries.eval.35_sample_dataset.tsv',
+            'extraction_path': 'data/evaluation/extracted_relevancy_35_sample_dataset.tsv',
+            'qrels_path': None
+        }
+    }
+
+    eval_datasets = []
+    for collection_name, data in datasets.items():
+        eval_dataset = inference_checkpoint_one_dataset(
+            checkpoint,
+            experiment,
+            collection_name,
+            data['collection_path'],
+            data['queries_path'],
+            data['extraction_path'],
+            data['qrels_path']
+        )
+        eval_datasets.append(eval_dataset)
+
+    assert eval_datasets[0] == eval_datasets[1]
+
+    return eval_datasets[0]
+
+
+def inference_checkpoint_one_dataset(
         checkpoint,
         experiment,
-        collection_path='data/evaluation/collection.dev.small_50-25-25.tsv',
-        queries_path='data/evaluation/queries.dev.small_ex_only.tsv',
-        qrels_path='data/evaluation/qrels.dev.small_ex_only.tsv',
+        collection_name,
+        collection_path,
+        queries_path,
+        extraction_path,
+        qrels_path,
 ):
     # inference
     root_folder = 'experiments'
@@ -115,9 +149,10 @@ def inference_qrels_small_dataset(
         'checkpoint': checkpoint,
         'collection_path': collection_path,
         'queries_path': queries_path,
+        'extraction_path': extraction_path,
         'root_folder': root_folder,
         'nbits': nbits,
-        'index_name': f"nbits={nbits}.steps={checkpoint_steps}",
+        'index_name': f"nbits={nbits}.steps={checkpoint_steps}.col_name={collection_name}",
         'checkpoint_steps': checkpoint_steps
     }
 
@@ -147,6 +182,7 @@ def inference_qrels_small_dataset(
         ranking_path, max_ranking_path = search_dataset(
             config_search['root_folder'],
             config_search['queries_path'],
+            config_search['extraction_path'],
             config_search['index_name']
         )
 
@@ -164,7 +200,8 @@ def inference_qrels_small_dataset(
     eval_dir = os.path.dirname(max_ranking_path)
     assert eval_dir == os.path.dirname(ranking_path)
 
-    update_retrieval_figures(eval_dir, qrels_path, collection_path)
+    if qrels_path is not None:
+        update_retrieval_figures(eval_dir, qrels_path, collection_path)
     update_extractions_figures(eval_dir)
 
     return eval_dir
@@ -181,30 +218,22 @@ def parse_args():
 
 
 def main():
-    # 35 sample dataset
-    # queries_path = 'data/35_sample_dataset/35/queries.tsv'
-    # collection_path = 'colbert_data/35_sample_dataset/35/collection.tsv'
-
-    # checkpoint = 'colbert-ir/colbertv1.9'
-
-    collection_path = 'data/evaluation/collection.dev.small_50-25-25.tsv'
-    queries_path = 'data/evaluation/queries.dev.small_ex_only.tsv'
-    qrels_path = 'data/evaluation/qrels.dev.small_ex_only.tsv'
-
     args = parse_args()
 
     eval_dir = args.results_dir
     if eval_dir is None:
-        eval_dir = inference_qrels_small_dataset(
-            args.checkpoint, args.experiment,
-            collection_path, queries_path, qrels_path
+        eval_dir = inference_checkpoint_all_datasets(
+            args.checkpoint, args.experiment
         )
 
     if wandb.run is None:
         run_name = eval_dir.strip('/').split('/')[-1]
         connect_running_wandb(run_name)
 
-    update_retrieval_figures(eval_dir, qrels_path, collection_path)
+    # update_retrieval_figures(eval_dir, qrels_path, collection_path)
+    # not possible to do now, because we don't have qrels_path and collection_path
+    # matters only if you would like to compute more retrieval metrics
+
     update_extractions_figures(eval_dir)
     wandb.run.finish()
 

@@ -142,7 +142,7 @@ class Searcher:
             'max_scores': max_scores[:k] if self.config.return_max_scores else None
         }
 
-    def search_extractions(self, queries, extractions, translate_dict_path):
+    def search_extractions(self, queries, extractions):
         assert self.config.return_max_scores, "return_max_scores must be set to True for search_extractions."
 
         extractions = Extractions.cast(extractions)

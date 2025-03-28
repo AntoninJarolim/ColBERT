@@ -1,6 +1,7 @@
 import json
 import os
 import re
+from collections import defaultdict
 
 import jsonlines
 import torch
@@ -98,29 +99,33 @@ def evaluate_retrieval(ranking_path, qrels_path, collection_path, index_name):
 
 
 def update_extractions_figures(evaluation_path):
-    pattern = re.compile(r'nbits=\d+\.steps=(\d+)\.extraction_scores\.jsonl$')
+    pattern = re.compile(r'nbits=\d+\.steps=(\d+)\.col_name=(.+)\.extraction_scores\.jsonl$')
 
-    files_to_eval = []
+    files_by_coll = defaultdict(list)
     for file in os.listdir(evaluation_path):
         match = pattern.search(file)
         if match:
-            files_to_eval.append((file, int(match.group(1))))
+            collection_name = match.group(2)
+            files_by_coll[collection_name].append((file, int(match.group(1))))
 
-    df_data = []
-    files_to_eval = sorted(files_to_eval, key=lambda x: int(x[1]))
-    for i, (file, steps) in enumerate(files_to_eval):
-        data = _evaluate_extractions(os.path.join(evaluation_path, file), steps, i == 0)
-        df_data.extend(data)
+    for collection_name, files_to_eval in files_by_coll.items():
+        df_data = []
+        files_to_eval = sorted(files_to_eval, key=lambda x: int(x[1]))
+        for i, (file, steps) in enumerate(files_to_eval):
+            data = _evaluate_extractions(os.path.join(evaluation_path, file), steps, i == 0)
+            df_data.extend(data)
 
+        _log_pr_curve_wandb(collection_name, df_data)
+
+
+def _log_pr_curve_wandb(collection_name, df_data):
     # Convert to DataFrame
     df = pd.DataFrame(df_data, columns=["Recall", "Precision", "Type"])
     df_cp = df.copy()[df['Type'].str.contains('Max-Values')]
-
     # Create custom colours
     df_cp["Step"] = df_cp["Type"].str.extract(r"(\d+)").astype(int)
     # Normalize steps for colormap mapping
     norm = mcolors.Normalize(vmin=df_cp["Step"].min(), vmax=df_cp["Step"].max())
-
     # Create a gradient colormap (e.g., "viridis" or "coolwarm")
     cmap = plt.cm.copper
     color_mapping = {t: cmap(norm(s)) for t, s in zip(df_cp["Type"].unique(), df_cp["Step"].unique())}
@@ -129,19 +134,17 @@ def update_extractions_figures(evaluation_path):
             'Random': 'red'
         }
     )
-
     fig, ax = plt.subplots(figsize=(10, 6), dpi=200)
     sns.lineplot(data=df, x="Recall", y="Precision", hue="Type", ax=ax, palette=color_mapping)
-    ax.set_title(f"PR Curve")
-
+    ax.set_title(f"PR Curve {collection_name}")
     wandb.log({
-        f"pr_curve_all": wandb.Image(fig)
+        f"pr_curve_all_{collection_name}": wandb.Image(fig)
     })
 
 
 def update_retrieval_figures(evaluation_path, qrels_path, collection_path):
     # Generate evaluation jsons from ranking.tsv
-    pattern = re.compile(r'nbits=\d+\.steps=(\d+)\.ranking.tsv')
+    pattern = re.compile(r'nbits=\d+\.steps=(\d+)\.col_name=(.+)\.ranking.tsv')
 
     for file in os.listdir(evaluation_path):
         match = pattern.search(file)
@@ -152,24 +155,26 @@ def update_retrieval_figures(evaluation_path, qrels_path, collection_path):
             evaluate_retrieval(full_evaluation_path, qrels_path, collection_path, index_name)
 
     # Use all jsons in the directory to generate figures/tables
-    pattern = re.compile(r'nbits=\d+\.steps=(\d+).retrieval_evaluation\.json')
+    pattern = re.compile(r'nbits=\d+\.steps=(\d+)\.col_name=(.+).retrieval_evaluation\.json')
 
-    file_datas = []
+    file_datas = defaultdict(list)
     for file in os.listdir(evaluation_path):
         match = pattern.search(file)
         if match:
             steps = int(match.group(1))
+            collection_name = int(match.group(2))
             with open(os.path.join(evaluation_path, file), "r") as matched_file:
                 data = json.load(matched_file)
             data['batch_steps'] = steps
-            file_datas.append(data)
+            file_datas['collection_name'].append(data)
 
-    # Log the evaluation to wandb
-    file_datas = sorted(file_datas, key=lambda x: x['batch_steps'])
-    values = [file_data.values() for file_data in file_datas]
-    tab = wandb.Table(columns=list(file_datas[0].keys()), data=values)
-    wandb.log({f"retrieval_evaluation": tab})
+    for collection_name, data in file_datas.items():
+        # Log the evaluation to wandb
+        data = sorted(data, key=lambda x: x['batch_steps'])
+        values = [file_data.values() for file_data in data]
+        tab = wandb.Table(columns=list(data[0].keys()), data=values)
+        wandb.log({f"retrieval_evaluation_{collection_name}": tab})
 
-    # Craete mrr@10 line plot and upload it to wandb
-    wandb.log({f"mrr@10_steps": wandb.plot.line(tab, "batch_steps", "mrr@10", title="MRR@10 over steps")})
-    wandb.log({f"recall@50_steps": wandb.plot.line(tab, "batch_steps", "recall@50", title="Recall@10 over steps")})
+        # Craete mrr@10 line plot and upload it to wandb
+        wandb.log({f"mrr@10_steps_{collection_name}": wandb.plot.line(tab, "batch_steps", "mrr@10", title="MRR@10 over steps")})
+        wandb.log({f"recall@50_steps_{collection_name}": wandb.plot.line(tab, "batch_steps", "recall@50", title="Recall@10 over steps")})

@@ -9,7 +9,7 @@ import traceback
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers.polling import PollingObserver
 
-from inference import inference_qrels_small_dataset
+from inference import inference_checkpoint_all_datasets
 
 # Configurable parameters
 GPU_UTIL_THRESHOLD = 10  # If GPU utilization is above this (in %), we wait.
@@ -57,7 +57,7 @@ def run_inference(checkpoint_path, experiment_name):
 
     print(f"Running inference on checkpoint: {checkpoint_path}")
 
-    results_dir = inference_qrels_small_dataset(checkpoint_path, experiment_name)
+    results_dir = inference_checkpoint_all_datasets(checkpoint_path, experiment_name)
     try:
         # After successful inference, mark the checkpoint as processed
         marker_file = create_marker_file_str(checkpoint_path)
