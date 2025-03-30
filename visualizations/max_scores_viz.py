@@ -29,14 +29,24 @@ set_data = {
 
 
 # DATA
-collection_path = "data/evaluation/collection.dev.small_50-25-25.tsv"
-queries_path = "data/evaluation/queries.dev.small_ex_only.tsv"
+data_paths = {
+    'official_dev_small': {
+        'collection_path': "data/evaluation/collection.dev.small_50-25-25.tsv",
+        'queries_path': "data/evaluation/queries.dev.small_ex_only.tsv",
+        'collection_length': 6600
+    },
+    '35_samples': {
+        'collection_path': "data/evaluation/collection.35_sample_dataset.tsv",
+        'queries_path': "data/evaluation/queries.eval.35_sample_dataset.tsv",
+        'collection_length': 35
+    }
+}
 
 
 @st.cache_resource
-def cache_collection(collection_path, queries_path):
-    collection = Collection.cast(collection_path)
-    queries = Queries.cast(queries_path)
+def cache_collection(collection_name):
+    collection = Collection.cast(data_paths[collection_name]['collection_path'])
+    queries = Queries.cast(data_paths[collection_name]['queries_path'])
     return collection, queries
 
 
@@ -85,22 +95,26 @@ def find_all_checkpoints(root_dir):
     # Sort by both time added and steps
     return dict(sorted(checkpoints.items(), key=lambda item: (item[1]['time_added'], item[1]['steps']), reverse=True))
 
-
-collection, queries = cache_collection(collection_path, queries_path)
-checkpoints = find_all_checkpoints('experiments/')
-
 # CONFIGURATION SIDEBAR
 with st.sidebar:
     "## Configuration"
-    "### Data loading"
-    set_data["start_data_id"] = st.selectbox('First id to show:',
-                                             range(len(collection)), key="start_data_id")
 
     "### Visualization settings"
     set_data["nr_show_data"] = st.selectbox('Number of passages to show:',
                                             [10, 20, 50, 100], key="dialogue_index")
     set_data["nr_columns"] = st.selectbox('Number of columns:',
                                           [1, 2, 3, 4, 5], key="nr_columns")
+    set_data["dataset"] = st.selectbox('Dataset:',
+                                       ['official_dev_small', '35_samples'], key="dataset")
+
+    "### Data loading"
+    set_data["start_data_id"] = st.selectbox('First id to show:',
+                                             range(data_paths[set_data["dataset"]]['collection_length']),
+                                             key="start_data_id")
+
+collection, queries = cache_collection(set_data["dataset"])
+checkpoints = find_all_checkpoints('experiments/')
+
 
 @st.cache_resource
 def cache_init_tokenizer(checkpoint):
@@ -110,10 +124,14 @@ def cache_init_tokenizer(checkpoint):
     return DocTokenizer(config)
 
 
-def get_viz_data(inference_dir, steps):
+def get_viz_data(inference_dir, steps, dataset):
     scores_file = None
     for file in os.listdir(inference_dir):
-        if file.endswith('extraction_scores.jsonl') and f"steps={steps}" in file:
+        if (
+                file.endswith('extraction_scores.jsonl')
+                and f"steps={steps}" in file
+                and f'col_name={dataset}' in file
+        ):
             scores_file = os.path.join(inference_dir, file)
             break
 
@@ -144,7 +162,10 @@ def show_one_example(idx, passage_tokens, gt_label_list, annotation_scores,
 
 def show_examples(starting_index, nr_show_data, viz_data: ExtractionResults, collection, queries, doc_tokenizer):
     for i in range(starting_index, starting_index + nr_show_data):
-        example = viz_data[i]
+        try:
+            example = viz_data[i]
+        except IndexError:
+            break  # No more data to show 
 
         query = queries[example['q_id']]
         passage = collection[example['psg_id']]
@@ -191,6 +212,13 @@ for col_idx, data_column in enumerate(data_columns):
 
         current_cp = checkpoints[cp]
 
-        viz_data = get_viz_data(current_cp['inference_path'], current_cp['steps'])
+        viz_data = get_viz_data(current_cp['inference_path'], current_cp['steps'], set_data["dataset"])
         doc_tokenizer = cache_init_tokenizer(current_cp['checkpoint_path'])
-        show_examples(set_data["start_data_id"], set_data["nr_show_data"], viz_data, collection, queries, doc_tokenizer)
+        show_examples(
+            set_data["start_data_id"],
+            set_data["nr_show_data"],
+            viz_data,
+            collection,
+            queries,
+            doc_tokenizer
+        )
