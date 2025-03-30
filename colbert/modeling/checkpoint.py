@@ -200,22 +200,6 @@ class Checkpoint(ColBERT):
 
         assert False, "Implement scoring"
 
-    def score(self, Q, D, mask=None, lengths=None):
-        assert False, "Call colbert_score"
-        # EVENTUALLY: Just call the colbert_score function!
-
-        if lengths is not None:
-            assert mask is None, "don't supply both mask and lengths"
-
-            mask = torch.arange(D.size(1), device=self.device) + 1
-            mask = mask.unsqueeze(0) <= lengths.to(self.device).unsqueeze(-1)
-
-        scores = D @ Q
-        scores = scores if mask is None else scores * mask.unsqueeze(-1)
-        scores = scores.max(1)
-
-        return scores.values.sum(-1).cpu()
-
 
 def _stack_3D_tensors(groups):
     bsize = sum([x.size(0) for x in groups])
