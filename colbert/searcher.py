@@ -9,7 +9,7 @@ from colbert.data import Collection, Queries, Ranking, TranslateAbleCollection
 from colbert.data.extractions import ExtractionResults, Extractions
 
 from colbert.modeling.checkpoint import Checkpoint
-from colbert.modeling.colbert import colbert_score
+from colbert.modeling.colbert import colbert_score, ColBERT, colbert_score_reduce_maxdocs
 from colbert.modeling.tokenization import tensorize_triples
 from colbert.search.index_storage import IndexScorer
 
@@ -132,14 +132,10 @@ class Searcher:
 
         pids, scores = self.ranker.rank(self.config, Q, filter_fn=filter_fn, pids=pids)
 
-        if self.config.return_max_scores:
-            scores, max_scores = scores
-
         return {
             'pids': pids[:k],
             'ranking': list(range(1, k + 1)),
             'scores': scores[:k],
-            'max_scores': max_scores[:k] if self.config.return_max_scores else None
         }
 
     def search_extractions(self, queries, extractions):
@@ -212,11 +208,13 @@ class Searcher:
         D = (doc_id, d_mask)
         Q = (q_id, q_mask)
 
-        out = self.checkpoint(Q, D)
+        Q, Q2 = self.checkpoint.query(*Q, return_ext_q=True)
+        D, D2, D_mask = self.checkpoint.doc(*D, keep_dims='return_mask', return_ext_docs=True)
 
-        max_scores = out['max_scores'].values
-        max_scores = max_scores.cpu()
-        return max_scores.squeeze()
+        max_scores = colbert_score_reduce_maxdocs(Q2, D2)
+
+        max_scores = max_scores.values.cpu().squeeze()
+        return max_scores
 
     def get_all_extractions(self, extraction_spans_all, passages, queries_text):
         nway = 1  # Because there is only one passage per query
