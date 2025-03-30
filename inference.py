@@ -1,7 +1,6 @@
 import argparse
 import os.path
 
-from pandas.core.algorithms import rank
 import wandb
 
 from colbert.infra import Run, RunConfig, ColBERTConfig
@@ -104,7 +103,7 @@ def inference_checkpoint_all_datasets(checkpoint, experiment):
         },
         '35_samples': {
             'collection_path': 'data/evaluation/collection.35_sample_dataset.tsv',
-            'queries_path': 'daqueries.eval.35_sample_dataset.tsv',
+            'queries_path': 'data/evaluation/queries.eval.35_sample_dataset.tsv',
             'extraction_path': 'data/evaluation/extracted_relevancy_35_sample_dataset.tsv',
             'qrels_path': None
         }
@@ -123,7 +122,8 @@ def inference_checkpoint_all_datasets(checkpoint, experiment):
         )
         eval_datasets.append(eval_dataset)
 
-    assert eval_datasets[0] == eval_datasets[1]
+    if len(eval_datasets) > 1:
+        assert eval_datasets[0] == eval_datasets[1]
 
     return eval_datasets[0]
 
@@ -152,7 +152,7 @@ def inference_checkpoint_one_dataset(
         'extraction_path': extraction_path,
         'root_folder': root_folder,
         'nbits': nbits,
-        'index_name': f"nbits={nbits}.steps={checkpoint_steps}.col_name={collection_name}",
+        'index_name': f"col_name={collection_name}.nbits={nbits}.steps={checkpoint_steps}",
         'checkpoint_steps': checkpoint_steps
     }
 
@@ -235,7 +235,7 @@ def main():
     # matters only if you would like to compute more retrieval metrics
 
     update_extractions_figures(eval_dir)
-    wandb.run.finish()
+    wandb.finish()
 
 
 if __name__ == '__main__':
