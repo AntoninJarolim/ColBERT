@@ -1,4 +1,5 @@
 import argparse
+import glob
 import os.path
 
 import wandb
@@ -93,7 +94,7 @@ def connect_running_wandb(run_name):
     wandb.init(project=project_name, name=run_name)
 
 
-def inference_checkpoint_all_datasets(checkpoint, experiment):
+def inference_checkpoint_all_datasets(checkpoint):
     datasets = {
         'official_dev_small': {
             'collection_path': 'data/evaluation/collection.dev.small_50-25-25.tsv',
@@ -113,7 +114,6 @@ def inference_checkpoint_all_datasets(checkpoint, experiment):
     for collection_name, data in datasets.items():
         eval_dataset = inference_checkpoint_one_dataset(
             checkpoint,
-            experiment,
             collection_name,
             data['collection_path'],
             data['queries_path'],
@@ -130,7 +130,6 @@ def inference_checkpoint_all_datasets(checkpoint, experiment):
 
 def inference_checkpoint_one_dataset(
         checkpoint,
-        experiment,
         collection_name,
         collection_path,
         queries_path,
@@ -139,8 +138,7 @@ def inference_checkpoint_one_dataset(
 ):
     # inference
     root_folder = 'experiments'
-    ex_name, run_name = get_run_name(checkpoint)
-    assert ex_name == experiment, (ex_name, run_name)
+    experiment, run_name = get_run_name(checkpoint)
     print(f"Current run name: {Run().config.name}")
 
     nbits = 2
@@ -207,35 +205,44 @@ def inference_checkpoint_one_dataset(
     return eval_dir
 
 
+def find_all_results_dirs():
+    base_dir = os.getcwd()
+    pattern = os.path.join(base_dir, 'experiments', '*', 'results', '*')
+    matching_paths = [path for path in glob.glob(pattern, recursive=True) if os.path.isdir(path)]
+    return matching_paths
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description='Inference runner')
-    parser.add_argument('--checkpoint', type=str, help='Path to the checkpoint')
-    parser.add_argument('--experiment', type=str, help='Path to the current experiment')
-    parser.add_argument('--results_dir', type=str,
-                        help='Path to dir with ranking and evaluation. Inference wont be run if provided',
-                        default=None)
+
+    # Run inference on concrete checkpoint
+    parser.add_argument('--checkpoint', type=str, help='Path to the checkpoint', default=None)
+    parser.add_argument('--results_dir', type=str, default=None,
+                        help='Path to dir with ranking and evaluation. Inference wont be run if provided')
+    parser.add_argument('--evaluate_all', action='store_true', default=False)
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
 
-    eval_dir = args.results_dir
-    if eval_dir is None:
-        eval_dir = inference_checkpoint_all_datasets(
-            args.checkpoint, args.experiment
-        )
+    eval_dir = None
+    if args.checkpoint is not None:
+        eval_dir = inference_checkpoint_all_datasets(args.checkpoint)
+    elif args.results_dir is not None:
+        eval_dir = args.results_dir
 
-    if wandb.run is None:
+    if eval_dir is None:
+        assert args.evaluate_all
+        eval_dirs = find_all_results_dirs()
+    else:
+        eval_dirs = [eval_dir]
+
+    for eval_dir in eval_dirs:
         run_name = eval_dir.strip('/').split('/')[-1]
         connect_running_wandb(run_name)
-
-    # update_retrieval_figures(eval_dir, qrels_path, collection_path)
-    # not possible to do now, because we don't have qrels_path and collection_path
-    # matters only if you would like to compute more retrieval metrics
-
-    update_extractions_figures(eval_dir)
-    wandb.finish()
+        update_extractions_figures(eval_dir)
+        wandb.finish()
 
 
 if __name__ == '__main__':
