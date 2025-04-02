@@ -8,6 +8,7 @@ import torch
 
 from matplotlib import pyplot as plt
 import matplotlib.colors as mcolors
+from torch import nn
 
 import wandb
 import numpy as np
@@ -16,6 +17,8 @@ import seaborn as sns
 
 from sklearn.metrics import precision_recall_curve
 
+from colbert.data.extractions import ExtractionResults
+from colbert.training.training import extraction_stats
 from utility.evaluate.msmarco_passages import evaluate_ms_marco_ranking
 
 
@@ -52,6 +55,7 @@ def max_f1_score(precision, recall):
 
 
 def _get_pr_data(all_extractions, all_max_scores):
+    all_max_scores = torch.nn.Sigmoid()(torch.tensor(all_max_scores)).detach().numpy()
     # Compute precision-recall curve
     precision, recall, thresholds = precision_recall_curve(
         np.array(all_extractions), all_max_scores, drop_intermediate=True
@@ -64,24 +68,60 @@ def _get_pr_data(all_extractions, all_max_scores):
     return data, best_f1
 
 
+def _log_extr_accuracy_wandb(target_extractions, all_max_scores, checkpoint_steps):
+    data = []
+    counter = 0
+    for ext, max_scr in zip(target_extractions, all_max_scores):
+        ext = torch.tensor(ext).float()
+        max_scr = torch.tensor(max_scr).float()
+
+        if sum(ext) == 0:
+            continue  # Skip if no positive extractions
+
+        assert len(ext) == len(max_scr)
+        ex_loss = nn.BCEWithLogitsLoss()(max_scr, ext)
+        d = extraction_stats(ex_loss, max_scr, ext)
+        data.append(d)
+
+        counter += 1
+
+    # Count nr of non-nan values np.count_nonzero(~np.isnan(data))
+    non_nans = {k: np.count_nonzero([~np.isnan(d[k]) for d in data]) for k in data[0].keys()}
+    assert [x > (len(target_extractions) * 0.99) for x in non_nans.values()]
+
+    # Get mean of all data
+    data_agg = {k: np.nanmean([d[k] for d in data]) for k in data[0].keys()}
+
+    # Log the data to wandb
+    wandb.define_metric("checkpoint_steps")
+    for k in data_agg.keys():
+        wandb.define_metric(k, step_metric="checkpoint_steps")
+
+    data_agg["checkpoint_steps"] = checkpoint_steps
+    wandb.log(data_agg)
+
+
 def _evaluate_extractions(max_ranking_path, checkpoint_steps, is_first_call):
     # Evaluation
-    with jsonlines.open(max_ranking_path) as reader:
-        max_ranking_results = list(reader)
+    max_ranking_results = ExtractionResults.cast(max_ranking_path)
 
-    all_extractions = [score for line in max_ranking_results for score in line['extraction_binary']]
-    all_max_scores = [score for line in max_ranking_results for score in line['max_scores']]
+    all_extractions = [[score for score in line['extraction_binary']] for line in max_ranking_results]
+    all_max_scores = [[score for score in line['max_scores']] for line in max_ranking_results]
 
+    # Compute accuracy etc. for each datapoint
+    _log_extr_accuracy_wandb(all_extractions, all_max_scores, checkpoint_steps)
 
-    # Compute precision-recall curve for real max scores
-    all_max_scores_p = torch.nn.Sigmoid()(torch.tensor(all_max_scores)).detach().numpy()
-    data_max, best_f1 = _get_pr_data(all_extractions, all_max_scores_p)
+    # Compute precision-recall curve for real max scores (requires flat data)
+    all_extractions_flat = np.array([x for sublist in all_extractions for x in sublist])
+    all_max_scores_flat = np.array([x for sublist in all_max_scores for x in sublist])
+
+    data_max, best_f1 = _get_pr_data(all_extractions_flat, all_max_scores_flat)
 
     data_rnd = []
     if is_first_call:
         # Compute precision-recall curve for baselines (random and select all)
-        random_scores = np.random.random_sample(len(all_max_scores_p))
-        data_rnd, _ = _get_pr_data(all_extractions, random_scores)
+        random_scores = np.random.random_sample(len(all_max_scores_flat))
+        data_rnd, _ = _get_pr_data(all_extractions_flat, random_scores)
 
     # Iterate over data types and store recall/precision values
     df_data = []
@@ -147,12 +187,15 @@ def _log_f1_scores_wandb(f1_scores):
     # collect column names and f1 scores
     collection_keys = [f"F1 scores {k}" for k in f1_scores.keys()]
     f1_scores_values = [[f1_scores[k][step] for step in all_steps] for k in f1_scores.keys()]
-    data = [all_steps] + f1_scores_values
-    data = list(zip(*data))  # Transpose
 
-    table = wandb.Table(columns=["Steps"] + collection_keys,
-                        data=data)
-    wandb.log({f"f1_scores": table})
+    assert len(collection_keys) == len(f1_scores_values)
+
+    for coll_name, f1 in zip(collection_keys, f1_scores_values):
+        data = [all_steps, f1]
+        data = list(zip(*data))  # Transpose
+        table = wandb.Table(columns=["Steps", coll_name],
+                            data=data)
+        wandb.log({f"f1_scores {coll_name}": table})
 
 
 def _log_pr_curve_wandb(collection_name, df_data):
@@ -175,10 +218,12 @@ def _log_pr_curve_wandb(collection_name, df_data):
     sns.lineplot(data=df, x="Recall", y="Precision", hue="Type", ax=ax, palette=color_mapping)
     ax.set_title(f"PR Curve {collection_name}")
     ax.legend(loc="upper left", bbox_to_anchor=(1, 1))
+    ax.set_ylim(0, 1)  # Force y-axis from 0 to 1
     plt.tight_layout()
     wandb.log({
         f"pr_curve_all_{collection_name}": wandb.Image(fig)
     })
+    plt.close(fig)
 
 
 def update_retrieval_figures(evaluation_path, qrels_path, collection_path):
