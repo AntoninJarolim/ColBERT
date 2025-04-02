@@ -105,88 +105,89 @@ def train(config: ColBERTConfig, triples, queries=None, collection=None, extract
     #     reader.skip_to_batch(start_batch_idx, checkpoint['arguments']['bsize'])
 
     st = StatsTracker()
-    for batch_idx, BatchSteps in zip(range(start_batch_idx, config.maxsteps), reader):
-        if (warmup_bert is not None) and warmup_bert <= batch_idx:
-            set_bert_grad(colbert, True)
-            warmup_bert = None
+    for e in range(config.epochs):
+        for batch_idx, BatchSteps in zip(range(start_batch_idx, config.maxsteps), reader):
+            if config.rank < 1:
+                print_message(batch_idx, train_loss)
+                manage_checkpoints(config, colbert, optimizer, batch_idx, savepath=None)
 
-        this_batch_loss = 0.0
+            if (warmup_bert is not None) and warmup_bert <= batch_idx and e == 0:
+                set_bert_grad(colbert, True)
+                warmup_bert = None
 
-        for batch in BatchSteps:
-            batch_logs = {}
-            with amp.context():
-                try:
-                    queries, passages, target_scores, target_extractions = batch
-                    encoding = [queries, (passages[0], passages[1])]
-                except:
-                    encoding, target_scores = batch
-                    encoding = [encoding.to(DEVICE)]
+            this_batch_loss = 0.0
 
-                outs = colbert(*encoding)
-                scores = outs['scores']
-                scores = scores.view(-1, config.nway)
+            for batch in BatchSteps:
+                batch_logs = {}
+                with amp.context():
+                    try:
+                        queries, passages, target_scores, target_extractions = batch
+                        encoding = [queries, (passages[0], passages[1])]
+                    except:
+                        encoding, target_scores = batch
+                        encoding = [encoding.to(DEVICE)]
 
-                if len(target_scores) and not config.ignore_scores:
-                    target_scores = torch.tensor(target_scores).view(-1, config.nway).to(DEVICE)
-                    target_scores = target_scores * config.distillation_alpha
-                    target_scores = torch.nn.functional.log_softmax(target_scores, dim=-1)
+                    outs = colbert(*encoding)
+                    scores = outs['scores']
+                    scores = scores.view(-1, config.nway)
 
-                    log_scores = torch.nn.functional.log_softmax(scores, dim=-1)
-                    loss = torch.nn.KLDivLoss(reduction='batchmean', log_target=True)(log_scores, target_scores)
-                    batch_logs['distillation_loss'] = loss.item()
-                else:
-                    loss = nn.CrossEntropyLoss()(scores, labels[:scores.size(0)])
+                    if len(target_scores) and not config.ignore_scores:
+                        target_scores = torch.tensor(target_scores).view(-1, config.nway).to(DEVICE)
+                        target_scores = target_scores * config.distillation_alpha
+                        target_scores = torch.nn.functional.log_softmax(target_scores, dim=-1)
 
-                if config.use_ib_negatives:
-                    ib_loss = outs['ib_loss']
+                        log_scores = torch.nn.functional.log_softmax(scores, dim=-1)
+                        loss = torch.nn.KLDivLoss(reduction='batchmean', log_target=True)(log_scores, target_scores)
+                        batch_logs['distillation_loss'] = loss.item()
+                    else:
+                        loss = nn.CrossEntropyLoss()(scores, labels[:scores.size(0)])
+
+                    if config.use_ib_negatives:
+                        ib_loss = outs['ib_loss']
+                        if config.rank < 1:
+                            print('\t\t\t\t', loss.item(), ib_loss.item())
+
+                        batch_logs['ib_loss'] = ib_loss.item()
+                        loss += ib_loss
+
+                    if config.return_max_scores:
+                        max_scores, max_scores_i = outs['max_scores']
+
+                        # Extract scores for first (ie relevant) documents
+                        first_doc_ids = [b * config.nway for b in range(int(passages[0].size(0) / config.nway))]
+                        max_scores_first, max_scores_i_f = max_scores[first_doc_ids], max_scores_i[first_doc_ids]
+                        doc_mask = ~passages[2][first_doc_ids]
+
+                        ex_loss_unreduced = nn.BCEWithLogitsLoss(reduction='none')(max_scores_first, target_extractions)
+                        ex_loss_unreduced = doc_mask * ex_loss_unreduced  # Set masked tokens scores to 0
+                        ex_loss = torch.mean(ex_loss_unreduced.sum(dim=-1) / doc_mask.sum(dim=-1))
+
+                        # mask documents all specials and skip tokens
+                        masked_scores, targets_masked = max_scores_first[doc_mask], target_extractions[doc_mask]
+                        batch_logs.update(extraction_stats(ex_loss, masked_scores, targets_masked))
+                        st.save_idx(max_scores_i_f, doc_mask, queries[1])
+
+                        loss = (1 - config.extractions_lambda) * loss + config.extractions_lambda * ex_loss
+
                     if config.rank < 1:
-                        print('\t\t\t\t', loss.item(), ib_loss.item())
-
-                    batch_logs['ib_loss'] = ib_loss.item()
-                    loss += ib_loss
-
-                if config.return_max_scores:
-                    max_scores, max_scores_i = outs['max_scores']
-
-                    # Extract scores for first (ie relevant) documents
-                    first_doc_ids = [b * config.nway for b in range(int(passages[0].size(0) / config.nway))]
-                    max_scores_first, max_scores_i_f = max_scores[first_doc_ids], max_scores_i[first_doc_ids]
-                    doc_mask = ~passages[2][first_doc_ids]
-
-                    ex_loss_unreduced = nn.BCEWithLogitsLoss(reduction='none')(max_scores_first, target_extractions)
-                    ex_loss_unreduced = doc_mask * ex_loss_unreduced  # Set masked tokens scores to 0
-                    ex_loss = torch.mean(ex_loss_unreduced.sum(dim=-1) / doc_mask.sum(dim=-1))
-
-                    # mask documents all specials and skip tokens
-                    masked_scores, targets_masked = max_scores_first[doc_mask], target_extractions[doc_mask]
-                    batch_logs.update(extraction_stats(ex_loss, masked_scores, targets_masked))
-                    st.save_idx(max_scores_i_f, doc_mask, queries[1])
-
-                    loss = (1 - config.extractions_lambda) * loss + config.extractions_lambda * ex_loss
+                        wandb.log(dict({"total_loss": loss}, **batch_logs))
+                    loss = loss / config.accumsteps
 
                 if config.rank < 1:
-                    wandb.log(dict({"total_loss": loss}, **batch_logs))
-                loss = loss / config.accumsteps
+                    print_progress(scores)
 
-            if config.rank < 1:
-                print_progress(scores)
+                amp.backward(loss)
 
-            amp.backward(loss)
+                this_batch_loss += loss.item()
 
-            this_batch_loss += loss.item()
+            train_loss = this_batch_loss if train_loss is None else train_loss
+            train_loss = train_loss_mu * train_loss + (1 - train_loss_mu) * this_batch_loss
 
-        train_loss = this_batch_loss if train_loss is None else train_loss
-        train_loss = train_loss_mu * train_loss + (1 - train_loss_mu) * this_batch_loss
-
-        amp.step(colbert, optimizer, scheduler)
-
-        if config.rank < 1:
-            print_message(batch_idx, train_loss)
-            manage_checkpoints(config, colbert, optimizer, batch_idx + 1, savepath=None)
+            amp.step(colbert, optimizer, scheduler)
 
     if config.rank < 1:
         print_message("#> Done with all triples!")
-        ckpt_path = manage_checkpoints(config, colbert, optimizer, batch_idx + 1, savepath=None,
+        ckpt_path = manage_checkpoints(config, colbert, optimizer, batch_idx, savepath=None,
                                        consumed_all_triples=True)
 
         return ckpt_path  # TODO: This should validate and return the best checkpoint, not just the last one.

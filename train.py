@@ -30,6 +30,7 @@ def arg_parse():
     parser = argparse.ArgumentParser(description='Train ColBERT with extractions')
     parser.add_argument('--experiment', type=str, required=True, help='Experiment name')
     parser.add_argument('--ngpus', type=int, default=2, help='Number of GPUs')
+    parser.add_argument('--epochs', type=int, default=1, help='Number epochs to run training on')
     parser.add_argument('--ex_lambda', type=float, default=0.5, help='Extractions lambda')
     parser.add_argument('--accumsteps', type=int, default=2, help='Number of gradient accumulation steps')
     parser.add_argument('--checkpoint', type=str,

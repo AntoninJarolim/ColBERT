@@ -171,6 +171,8 @@ class TrainingSettings:
 
     add_max_linear: bool = DefaultVal(False)
 
+    epochs: int = DefaultVal(1)
+
 
 @dataclass
 class IndexingSettings:
