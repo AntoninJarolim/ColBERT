@@ -1,3 +1,4 @@
+import numpy as np
 import ujson
 from colbert.infra import Run
 import torch
@@ -47,14 +48,18 @@ class ExtractionResults:
                        'extraction_binary', 'extraction_full',
                        'max_scores', 'max_scores_full']
 
-    def __init__(self, data=None, metadata=None):
+    def __init__(self, data=None, metadata=None, skip_special=True):
         self.data = data
+        self.skip_special = skip_special
+
+        if skip_special:
+            self.data = self.skip_special_data()
 
         self.metadata = {} if metadata is None else metadata
         assert type(self.metadata) is dict, f"metadata initialized with type {type(self.metadata)}"
 
     @classmethod
-    def cast(cls, obj):
+    def cast(cls, obj, **kwargs):
         if type(obj) is list:
             # Keep only the valid keys
             keep_list = [{key: member[key] for key in cls.valid_data_keys} for member in obj]
@@ -70,11 +75,11 @@ class ExtractionResults:
             max_scores_only = [member['max_scores'] for member in keep_list]
             assert all([len(x) == len(y) for x, y in zip(extractions_only, max_scores_only)])
 
-            return cls(data=keep_list)
+            return cls(data=keep_list, **kwargs)
 
         if type(obj) is str:
             data, metadata = cls.open_jsonl(obj)
-            return cls(data=data, metadata=metadata)
+            return cls(data=data, metadata=metadata, **kwargs)
 
         assert False, f"obj has type {type(obj)} which is not compatible with cast()"
 
@@ -110,3 +115,26 @@ class ExtractionResults:
 
     def __getitem__(self, idx):
         return self.data[idx]
+
+    def skip_special_data(self):
+        keys_remove_special = [
+            'extraction_binary',
+            'extraction_full',
+            'max_scores',
+            'max_scores_full',
+        ]
+
+        new_data = []
+        for d in self.data:
+
+            for k in ['extraction_binary', 'extraction_full']:
+                assert np.all(np.array(d[k][:2]) == 0), 'Removing non-zero scores'
+                assert np.all(np.array(d[k][-1]) == 0), 'Removing non-zero scores'
+
+            for k in keys_remove_special:
+                # Remove first two -> [CLS] [D]
+                # Remove last one -> [SEP]
+                d[k] = d[k][2:-1]
+            new_data.append(d)
+
+        return new_data

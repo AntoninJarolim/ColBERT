@@ -4,6 +4,7 @@ import matplotlib
 import torch
 import numpy as np
 from matplotlib import pyplot as plt
+from sklearn.metrics import precision_recall_curve
 
 
 def create_highlighted_passage(passage_tokens, gt_label_list, annotation_scores,
@@ -101,3 +102,43 @@ def convert_scale_ln(normalized_tensor_list):
     normalized_tensor_list = 1 - (transf_list / torch.max(transf_list))
     normalized_tensor_list[negative_index] = -normalized_tensor_list[negative_index]
     return normalized_tensor_list
+
+
+def compute_all_recall_thresholds(viz_data):
+
+    all_ex = []
+    all_scores = []
+    for d in viz_data:
+        extractions = d['extraction_binary']
+        scores = d['max_scores']
+        assert len(extractions) == len(scores)
+
+        all_ex.append(extractions)
+        all_scores.append(scores)
+
+    all_ex_flat = [x for xs in all_ex for x in xs]
+    all_scores_flat = [x for xs in all_scores for x in xs]
+
+    precision, recall, thresholds = precision_recall_curve(
+        np.array(all_ex_flat), np.array(all_scores_flat), drop_intermediate=True
+    )
+
+    recall = recall[1:]  # Remove hard-code added '1' score
+
+    recall, thresholds = recall.tolist(), thresholds.tolist()
+
+    recall_th_dict = {r: t for r, t in zip(recall, thresholds)}
+
+    return recall_th_dict
+
+
+def hard_threshold(viz_data, threshold_value):
+    for d in viz_data:
+        d['max_scores_full'] = [
+            None if x is None else float(x > threshold_value)
+            for x
+            in d['max_scores_full']
+        ]
+
+    return viz_data
+

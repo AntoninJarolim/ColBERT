@@ -7,6 +7,7 @@ import glob
 
 # Allows having script in a folder
 import sys;
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from colbert.data import Collection, Queries
@@ -14,7 +15,7 @@ from colbert.data.extractions import ExtractionResults
 from colbert.infra import ColBERTConfig
 from colbert.modeling.tokenization import DocTokenizer
 
-from visualizations.viz_utils import create_highlighted_passage
+from visualizations.viz_utils import create_highlighted_passage, compute_all_recall_thresholds, hard_threshold
 
 st.set_page_config(layout="wide")
 
@@ -26,7 +27,6 @@ set_data = {
     "selected_checkpoints": None,
     "nr_columns": 1,
 }
-
 
 # DATA
 data_paths = {
@@ -77,7 +77,7 @@ def find_all_checkpoints(root_dir):
             'checkpoint_path': file_dir,
             'steps': steps,
             'time_added': time_added,
-            'exp_run':  f"{exp}/{run_name}"
+            'exp_run': f"{exp}/{run_name}"
         }
 
     # Find latest run time for each exp_run
@@ -94,6 +94,7 @@ def find_all_checkpoints(root_dir):
 
     # Sort by both time added and steps
     return dict(sorted(checkpoints.items(), key=lambda item: (item[1]['time_added'], item[1]['steps']), reverse=True))
+
 
 # CONFIGURATION SIDEBAR
 with st.sidebar:
@@ -137,7 +138,9 @@ def get_viz_data(inference_dir, steps, dataset):
 
     assert scores_file is not None, f"Could not find scores file in {inference_dir} with steps={steps}"
 
-    return ExtractionResults.cast(scores_file)
+    e = ExtractionResults.cast(scores_file)
+    f"{e.skip_special}"
+    return e
 
 
 def show_one_example(idx, passage_tokens, gt_label_list, annotation_scores,
@@ -161,21 +164,31 @@ def show_one_example(idx, passage_tokens, gt_label_list, annotation_scores,
 
 
 def show_examples(starting_index, nr_show_data, viz_data: ExtractionResults, collection, queries, doc_tokenizer):
-    for i in range(starting_index, starting_index + nr_show_data):
-        try:
-            example = viz_data[i]
-        except IndexError:
-            break  # No more data to show 
+    nr_printed_examples = 0
+    for i in range(starting_index, len(viz_data)):
+        if nr_show_data == nr_printed_examples:
+            break
+
+        example = viz_data[i]
 
         query = queries[example['q_id']]
         passage = collection[example['psg_id']]
         extraction_full = example['extraction_full']
         max_scores_full = example['max_scores_full']
 
+        if sum([0 if x is None else x for x in example['max_scores_full']]) == 0:
+            continue
+
         passage_tokens = doc_tokenizer.tensorize([passage])[0][0]  # First batch, ids only
         passage_tokens = doc_tokenizer.tok.batch_decode(passage_tokens)
+        passage_tokens = passage_tokens[2:-1]  # Remove [CLS] [D] and [SEP]
 
         show_one_example(i, passage_tokens, extraction_full, max_scores_full, additional_text=query)
+
+        nr_printed_examples += 1
+
+    if nr_printed_examples < nr_show_data:
+        "No more data to show. Exiting"
 
 
 def gradient_test():
@@ -203,17 +216,32 @@ def init_layout(nr_columns):
 
 
 data_columns = init_layout(set_data["nr_columns"])
+
+
 for col_idx, data_column in enumerate(data_columns):
     with data_column:
+        # Select and get data
         cp = st.selectbox(
             'Model checkpoint:',
-            list(checkpoints.keys()), key=f"checkpoint{col_idx}"
+            list(checkpoints.keys()), key=f"checkpoint_{col_idx}"
         )
-
         current_cp = checkpoints[cp]
-
-        viz_data = get_viz_data(current_cp['inference_path'], current_cp['steps'], set_data["dataset"])
         doc_tokenizer = cache_init_tokenizer(current_cp['checkpoint_path'])
+        viz_data = get_viz_data(current_cp['inference_path'], current_cp['steps'], set_data["dataset"])
+
+        # Decide thresholding
+        threshold = st.toggle("Thresholding", value=True,  key=f"threshold_togg_{col_idx}")
+        if threshold:
+            recall_thresholds = compute_all_recall_thresholds(viz_data)
+
+            threshold_key = st.selectbox(
+                'Recall:',
+                sorted(list(recall_thresholds.keys())), key=f"threshold_recall_{col_idx}"
+            )
+            threshold_value = recall_thresholds[threshold_key]
+            viz_data = hard_threshold(viz_data, threshold_value)
+
+        # Show loaded examples
         show_examples(
             set_data["start_data_id"],
             set_data["nr_show_data"],
