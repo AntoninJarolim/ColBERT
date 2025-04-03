@@ -105,6 +105,8 @@ class RunSettings:
 
     @property
     def wandb_entity(self):
+        from dotenv import load_dotenv
+        load_dotenv('.env_wandb')
         return os.environ.get('WANDB_ENTITY')
 
 @dataclass

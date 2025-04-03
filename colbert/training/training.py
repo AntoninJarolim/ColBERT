@@ -28,7 +28,7 @@ import wandb
 def wandb_find_next_name(initial_run_name):
     api = wandb.Api()
     project_name = Run().config.project_name
-    entity = Run().confing.wandb_entity
+    entity = Run().config.wandb_entity
 
     # Fetch all runs in the project
     runs = api.runs(f"{entity}/{project_name}")
@@ -38,8 +38,10 @@ def wandb_find_next_name(initial_run_name):
     max_runs = 100
     for run_index in range(max_runs):
         if all(run.name != new_run_name for run in runs):
+            print(f"New run name: {new_run_name}")
             return new_run_name
         else:
+            print(f"Run-name '{new_run_name}' already exists, trying new")
             new_run_name = f"{initial_run_name}_{run_index}"
 
     raise ValueError(f"Experiment '{initial_run_name}' was ran more then {max_runs} times.")
@@ -196,7 +198,7 @@ def train(config: ColBERTConfig, triples, queries=None, collection=None, extract
                         consumed = (
                             (batch_idx * config.bsize + acc_step * (config.bsize / config.accumsteps)) / len(reader)
                         )
-                        wandb.log(dict({"total_loss": loss, "lr": scheduler.get_lr()}, **batch_logs), step=consumed)
+                        wandb.log(dict({"total_loss": loss, "lr": scheduler.get_lr()}, **batch_logs)) #, step=consumed)
                     loss = loss / config.accumsteps
 
                 if config.rank < 1:
