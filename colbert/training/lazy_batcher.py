@@ -1,5 +1,6 @@
 import os
 import ujson
+import random
 
 from functools import partial
 
@@ -37,7 +38,6 @@ class LazyBatcher():
         assert len(self.collection) > 0, "Received no collection on which to train."
 
     def __iter__(self):
-        self.position = 0
         return self
 
     def __len__(self):
@@ -48,6 +48,8 @@ class LazyBatcher():
         self.position = endpos
 
         if offset + self.bsize > self.__len__():
+            self.position = 0
+            random.shuffle(self.triples)
             raise StopIteration
 
         all_queries, all_passages, all_scores, all_extractions = [], [], [], []
