@@ -105,19 +105,20 @@ def train(config: ColBERTConfig, triples, queries=None, collection=None, extract
     #     reader.skip_to_batch(start_batch_idx, checkpoint['arguments']['bsize'])
 
     st = StatsTracker()
+    batch_idx = 0
     for e in range(config.epochs):
-        for batch_idx, BatchSteps in zip(range(start_batch_idx, config.maxsteps), reader):
+        for BatchSteps in reader:
             if config.rank < 1:
                 print_message(batch_idx, train_loss)
                 manage_checkpoints(config, colbert, optimizer, batch_idx, savepath=None)
 
-            if (warmup_bert is not None) and warmup_bert <= batch_idx and e == 0:
+            if (warmup_bert is not None) and warmup_bert <= batch_idx:
                 set_bert_grad(colbert, True)
                 warmup_bert = None
 
             this_batch_loss = 0.0
 
-            for batch in BatchSteps:
+            for acc_step, batch in enumerate(BatchSteps):
                 batch_logs = {}
                 with amp.context():
                     try:
@@ -170,7 +171,8 @@ def train(config: ColBERTConfig, triples, queries=None, collection=None, extract
                         loss = (1 - config.extractions_lambda) * loss + config.extractions_lambda * ex_loss
 
                     if config.rank < 1:
-                        wandb.log(dict({"total_loss": loss}, **batch_logs))
+                        consumed = (batch_idx * config.bsize + acc_step * (config.bsize / config.accumsteps)) / len(reader)
+                        wandb.log(dict({"total_loss": loss}, **batch_logs), step=consumed)
                     loss = loss / config.accumsteps
 
                 if config.rank < 1:
@@ -184,6 +186,8 @@ def train(config: ColBERTConfig, triples, queries=None, collection=None, extract
             train_loss = train_loss_mu * train_loss + (1 - train_loss_mu) * this_batch_loss
 
             amp.step(colbert, optimizer, scheduler)
+
+            batch_idx += 1
 
     if config.rank < 1:
         print_message("#> Done with all triples!")
