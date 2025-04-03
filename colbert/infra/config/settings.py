@@ -98,6 +98,14 @@ class RunSettings:
     def is_debugging(self):
         return os.environ.get('DEBUG', False)
 
+    @property
+    def project_name(self):
+        is_debugging = 'debugging' if self.is_debugging else ''
+        return is_debugging + "llm2colbert-BCE"
+
+    @property
+    def wandb_entity(self):
+        return os.environ.get('WANDB_ENTITY')
 
 @dataclass
 class TokenizerSettings:

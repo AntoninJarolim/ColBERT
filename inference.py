@@ -77,8 +77,8 @@ def connect_running_wandb(run_name):
     api = wandb.Api()
 
     # Replace with your project name
-    project_name = "eval-llm2colbert-BCE"
-    entity = "jarolim-antonin-brno-university-of-technology"  # todo: put me to env/config
+    project_name = Run().config.project_name
+    entity = Run().confing.wandb_entity
     run_name = 'eval_' + run_name
 
     # Fetch all runs in the project

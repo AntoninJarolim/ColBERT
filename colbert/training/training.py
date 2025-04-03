@@ -25,14 +25,36 @@ from colbert.infra.run import Run
 import wandb
 
 
+def wandb_find_next_name(initial_run_name):
+    api = wandb.Api()
+    project_name = Run().config.project_name
+    entity = Run().confing.wandb_entity
+
+    # Fetch all runs in the project
+    runs = api.runs(f"{entity}/{project_name}")
+
+    # Find the run with the specified name
+    new_run_name = initial_run_name
+    max_runs = 100
+    for run_index in range(max_runs):
+        if all(run.name != new_run_name for run in runs):
+            return new_run_name
+        else:
+            new_run_name = f"{initial_run_name}_{run_index}"
+
+    raise ValueError(f"Experiment '{initial_run_name}' was ran more then {max_runs} times.")
+
+
 def init_wandb(config):
-    is_debugging = 'debugging' if Run().config.is_debugging else ''
+    name = config.name if config.resume else wandb_find_next_name(config.experiment)
+
     wandb.init(
-        project=is_debugging + "llm2colbert-BCE",
+        project=Run().config.project_name,
         config=config.__dict__,
-        resume="allow"
+        resume="must" if config.resume else "allow",
+        name=name,
     )
-    Run().config.name = wandb.run.name  # Used as path to save checkpoints
+    Run().config.name = name  # Used as path to save checkpoints
 
 
 def train(config: ColBERTConfig, triples, queries=None, collection=None, extracted_spans=None):
