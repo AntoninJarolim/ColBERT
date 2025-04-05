@@ -139,7 +139,7 @@ def inference_checkpoint_one_dataset(
     # inference
     root_folder = 'experiments'
     experiment, run_name = get_run_name(checkpoint)
-    print(f"Current run name: {Run().config.name}")
+    print(f"Current run name: {run_name}")
 
     nbits = 2
     checkpoint_steps = get_checkpoint_steps(checkpoint)
@@ -201,6 +201,7 @@ def inference_checkpoint_one_dataset(
     if qrels_path is not None:
         update_retrieval_figures(eval_dir, qrels_path, collection_path)
     update_extractions_figures(eval_dir)
+    wandb.finish()
 
     return eval_dir
 
@@ -242,6 +243,7 @@ def main():
         run_name = eval_dir.strip('/').split('/')[-1]
         connect_running_wandb(run_name)
         update_extractions_figures(eval_dir)
+        # todo: check why it is not possible to also evaluate retrieval again
         wandb.finish()
 
 
