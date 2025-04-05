@@ -57,7 +57,7 @@ def run_inference(checkpoint_path, experiment_name):
 
     print(f"Running inference on checkpoint: {checkpoint_path}")
 
-    results_dir = inference_checkpoint_all_datasets(checkpoint_path, experiment_name)
+    results_dir = inference_checkpoint_all_datasets(checkpoint_path)
     try:
         # After successful inference, mark the checkpoint as processed
         marker_file = create_marker_file_str(checkpoint_path)
@@ -91,14 +91,15 @@ def find_unprocessed_checkpoints(root_dir, ignore_markfiles):
     checkpoint_files = glob.glob(pattern, recursive=True)
     unprocessed = []
     for cp in checkpoint_files:
-        cp_dirname = os.path.dirname(cp)
+        cp_dirname_path = os.path.dirname(cp)
 
-        if cp_dirname.split("/")[-1] == "colbert":
+        dir_cp = cp_dirname_path.split("/")[-1]
+        if dir_cp == "colbert":
             print(f"Skipping {cp} directory because batch step count is not there.")
             continue
 
         if ignore_markfiles or not has_marker_file(cp):
-            unprocessed.append(cp_dirname)
+            unprocessed.append(cp_dirname_path)
     return sorted(unprocessed)  # Sort for consistent processing
 
 
@@ -126,8 +127,11 @@ def main():
                         help='Name of current experiment to look for data in experiments/')
     parser.add_argument('--ignore-markfiles', action='store_true',)
     args = parser.parse_args()
-
-    root_dir = os.path.join('experiments', args.experiment_name, 'train')
+    
+    if args.experiment_name == "all":
+        root_dir = 'experiments/'
+    else:
+        root_dir = os.path.join('experiments', args.experiment_name, 'train')
 
     if not os.path.exists(root_dir):
         os.makedirs(root_dir)  # Directory for watching might not exist yet
