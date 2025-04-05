@@ -77,8 +77,8 @@ def connect_running_wandb(run_name):
     api = wandb.Api()
 
     # Replace with your project name
-    project_name = Run().config.project_name
-    entity = Run().confing.wandb_entity
+    project_name = 'eval-' + Run().config.project_name
+    entity = Run().config.wandb_entity
     run_name = 'eval_' + run_name
 
     # Fetch all runs in the project
@@ -90,7 +90,7 @@ def connect_running_wandb(run_name):
             print(f"Resuming found run ID: {run.id}")
             wandb.init(project=project_name, id=run.id, resume="must")
 
-    print("Starting a new eval run")
+    print("\n\nStarting new eval run with name:", run_name)
     wandb.init(project=project_name, name=run_name)
 
 
