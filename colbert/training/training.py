@@ -198,7 +198,11 @@ def train(config: ColBERTConfig, triples, queries=None, collection=None, extract
                         consumed = (
                             (batch_idx * config.bsize + acc_step * (config.bsize / config.accumsteps)) / len(reader)
                         )
-                        wandb.log(dict({"total_loss": loss, "lr": scheduler.get_lr()}, **batch_logs)) #, step=consumed)
+                        wandb.log(dict(
+                            total_loss=loss,
+                            lr=scheduler.get_last_lr()[0],
+                            consumed=consumed,
+                            **batch_logs))
                     loss = loss / config.accumsteps
 
                 if config.rank < 1:
