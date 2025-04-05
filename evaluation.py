@@ -68,7 +68,7 @@ def _get_pr_data(all_extractions, all_max_scores):
     return data, best_f1
 
 
-def _log_extr_accuracy_wandb(target_extractions, all_max_scores, checkpoint_steps):
+def _log_extr_accuracy_wandb(target_extractions, all_max_scores, checkpoint_steps, collection_name):
     data = []
     counter = 0
     for ext, max_scr in zip(target_extractions, all_max_scores):
@@ -90,27 +90,19 @@ def _log_extr_accuracy_wandb(target_extractions, all_max_scores, checkpoint_step
     assert [x > (len(target_extractions) * 0.99) for x in non_nans.values()]
 
     # Get mean of all data
-    data_agg = {k: np.nanmean([d[k] for d in data]) for k in data[0].keys()}
+    data_agg = {f"{k}-{collection_name}": np.nanmean([d[k] for d in data]) for k in data[0].keys()}
 
     # Log the data to wandb
-    wandb.define_metric("checkpoint_steps")
+    collection_cp_steps = f"checkpoint_steps-{collection_name}"
+    wandb.define_metric(collection_cp_steps)
     for k in data_agg.keys():
-        wandb.define_metric(k, step_metric="checkpoint_steps")
+        wandb.define_metric(k, step_metric=collection_cp_steps)
 
-    data_agg["checkpoint_steps"] = checkpoint_steps
+    data_agg[collection_cp_steps] = checkpoint_steps
     wandb.log(data_agg)
 
 
-def _evaluate_extractions(max_ranking_path, checkpoint_steps, is_first_call):
-    # Evaluation
-    max_ranking_results = ExtractionResults.cast(max_ranking_path)
-
-    all_extractions = [[score for score in line['extraction_binary']] for line in max_ranking_results]
-    all_max_scores = [[score for score in line['max_scores']] for line in max_ranking_results]
-
-    # Compute accuracy etc. for each datapoint
-    _log_extr_accuracy_wandb(all_extractions, all_max_scores, checkpoint_steps)
-
+def _evaluate_extractions(all_extractions, all_max_scores, checkpoint_steps, is_first_call):
     # Compute precision-recall curve for real max scores (requires flat data)
     all_extractions_flat = np.array([x for sublist in all_extractions for x in sublist])
     all_max_scores_flat = np.array([x for sublist in all_max_scores for x in sublist])
@@ -165,7 +157,19 @@ def update_extractions_figures(evaluation_path):
         # Sort files by steps
         files_to_eval = sorted(files_to_eval, key=lambda x: int(x[1]))
         for i, (file, steps) in enumerate(files_to_eval):
-            data, best_f1 = _evaluate_extractions(os.path.join(evaluation_path, file), steps, i == 0)
+
+            # Evaluation
+            max_ranking_path = os.path.join(evaluation_path, file)
+            max_ranking_results = ExtractionResults.cast(max_ranking_path)
+
+            all_extractions = [[score for score in line['extraction_binary']] for line in max_ranking_results]
+            all_max_scores = [[score for score in line['max_scores']] for line in max_ranking_results]
+
+            data, best_f1 = _evaluate_extractions(all_extractions, all_max_scores,  steps, i == 0)
+
+            # Compute accuracy etc. for each datapoint
+            _log_extr_accuracy_wandb(all_extractions, all_max_scores, steps, collection_name)
+
             df_data.extend(data)
             f1_scores[collection_name][steps] = best_f1
 
