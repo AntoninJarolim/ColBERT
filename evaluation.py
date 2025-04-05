@@ -140,7 +140,26 @@ def evaluate_retrieval(ranking_path, qrels_path, collection_path, index_name):
         json.dump(out_json, f, indent=4)
 
 
-def update_extractions_figures(evaluation_path):
+def _cp_palette(df_data):
+    # Convert to DataFrame
+    df = pd.DataFrame(df_data, columns=["Recall", "Precision", "Type"])
+    df_cp = df.copy()[df['Type'].str.contains('Max-Values')]
+    # Create custom colours
+    df_cp["Step"] = df_cp["Type"].str.extract(r"(\d+)").astype(int)
+    # Normalize steps for colormap mapping
+    norm = mcolors.Normalize(vmin=df_cp["Step"].min(), vmax=df_cp["Step"].max())
+    # Create a gradient colormap (e.g., "viridis" or "coolwarm")
+    cmap = plt.cm.copper
+    color_mapping = {t: cmap(norm(s)) for t, s in zip(df_cp["Type"].unique(), df_cp["Step"].unique())}
+    color_mapping.update(
+        {
+            'Random': 'red'
+        }
+    )
+    return color_mapping
+
+
+def update_extractions_figures(evaluation_path, run_name):
     pattern = re.compile(r'col_name=(.+)\.nbits=\d+\.steps=(\d+)\.extraction_scores\.jsonl$')
 
     files_by_coll = defaultdict(list)
@@ -151,6 +170,7 @@ def update_extractions_figures(evaluation_path):
             files_by_coll[collection_name].append((file, int(match.group(2))))
 
     f1_scores = defaultdict(dict)
+    best_pr_curves = defaultdict(list)
     for collection_name, files_to_eval in files_by_coll.items():
         df_data = []
 
@@ -165,19 +185,29 @@ def update_extractions_figures(evaluation_path):
             all_extractions = [[score for score in line['extraction_binary']] for line in max_ranking_results]
             all_max_scores = [[score for score in line['max_scores']] for line in max_ranking_results]
 
-            data, best_f1 = _evaluate_extractions(all_extractions, all_max_scores,  steps, i == 0)
+            pr_data, best_f1 = _evaluate_extractions(all_extractions, all_max_scores,  steps, i == 0)
+            df_data.extend(pr_data)
 
             # Compute accuracy etc. for each datapoint
             _log_extr_accuracy_wandb(all_extractions, all_max_scores, steps, collection_name)
 
-            df_data.extend(data)
             f1_scores[collection_name][steps] = best_f1
 
+            best_pr_curves[collection_name].append(
+                {'best_f1': best_f1, 'pr_data': pr_data, 'checkpoint_steps': steps, 'run_name': run_name}
+            )
+
         # Log the PR curve to wandb
-        _log_pr_curve_wandb(collection_name, df_data)
+
+        _log_pr_curve_wandb(collection_name, df_data, _cp_palette(df_data))
 
     # Log the F1 scores to wandb
     _log_f1_scores_wandb(f1_scores)
+
+    # get best results for each collection by f1 value
+    best_pr_curves = {k: sorted(v, key=lambda x: x['best_f1'], reverse=True)[0] for k, v in best_pr_curves.items()}
+
+    return [{'collection_name': k, **v} for k, v in best_pr_curves.items()]
 
 
 def _log_f1_scores_wandb(f1_scores):
@@ -202,22 +232,8 @@ def _log_f1_scores_wandb(f1_scores):
         wandb.log({f"f1_scores {coll_name}": table})
 
 
-def _log_pr_curve_wandb(collection_name, df_data):
-    # Convert to DataFrame
-    df = pd.DataFrame(df_data, columns=["Recall", "Precision", "Type"])
-    df_cp = df.copy()[df['Type'].str.contains('Max-Values')]
-    # Create custom colours
-    df_cp["Step"] = df_cp["Type"].str.extract(r"(\d+)").astype(int)
-    # Normalize steps for colormap mapping
-    norm = mcolors.Normalize(vmin=df_cp["Step"].min(), vmax=df_cp["Step"].max())
-    # Create a gradient colormap (e.g., "viridis" or "coolwarm")
-    cmap = plt.cm.copper
-    color_mapping = {t: cmap(norm(s)) for t, s in zip(df_cp["Type"].unique(), df_cp["Step"].unique())}
-    color_mapping.update(
-        {
-            'Random': 'red'
-        }
-    )
+def _log_pr_curve_wandb(collection_name, data, color_mapping=None):
+    df = pd.DataFrame(data, columns=["Recall", "Precision", "Type"])
     fig, ax = plt.subplots(figsize=(10, 6), dpi=200)
     sns.lineplot(data=df, x="Recall", y="Precision", hue="Type", ax=ax, palette=color_mapping)
     ax.set_title(f"PR Curve {collection_name}")
@@ -269,3 +285,28 @@ def update_retrieval_figures(evaluation_path, qrels_path, collection_path):
         # Craete mrr@10 line plot and upload it to wandb
         wandb.log({f"mrr@10_steps_{collection_name}": wandb.plot.line(tab, "batch_steps", "mrr@10", title="MRR@10 over steps")})
         wandb.log({f"recall@50_steps_{collection_name}": wandb.plot.line(tab, "batch_steps", "recall@50", title="Recall@10 over steps")})
+
+
+def log_best_pr_curve_wandb(best_pr_curves):
+    # Save the best PR curves
+    print("\n\n Extraction aggregated f1 results:")
+    all_pr_data = defaultdict(list)
+    all_f1_data = defaultdict(list)
+    for best_pr in best_pr_curves:
+        name = f"{best_pr['run_name']} {best_pr['checkpoint_steps']}"
+        all_f1_data[best_pr['collection_name']].append((best_pr['best_f1'], name))
+
+        for p, r, _ in best_pr['pr_data']:
+            all_pr_data[best_pr['collection_name']].append((p, r, name))
+
+    # Print the best F1 scores
+    for collection, data in all_f1_data.items():
+        print(f"Best F1 score for {collection}:")
+        for f1, name in data:
+            print(f"\t{name}: {f1:.4f}")
+        print()
+
+    # Log the best PR curves
+    for collection, data in all_pr_data.items():
+        fig_name = f'PR curve {collection}'
+        _log_pr_curve_wandb(fig_name, data)

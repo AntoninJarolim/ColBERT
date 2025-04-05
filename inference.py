@@ -9,7 +9,7 @@ from colbert import Indexer
 from colbert.data import Queries
 from colbert.infra import Run, RunConfig, ColBERTConfig
 from colbert import Searcher
-from evaluation import update_retrieval_figures, update_extractions_figures
+from evaluation import update_retrieval_figures, update_extractions_figures, log_best_pr_curve_wandb
 
 
 def remove_prefix(text, prefix):
@@ -200,7 +200,7 @@ def inference_checkpoint_one_dataset(
 
     if qrels_path is not None:
         update_retrieval_figures(eval_dir, qrels_path, collection_path)
-    update_extractions_figures(eval_dir)
+    update_extractions_figures(eval_dir, run_name)
     wandb.finish()
 
     return eval_dir
@@ -239,12 +239,23 @@ def main():
     else:
         eval_dirs = [eval_dir]
 
+    print("Evaluation of directories found:")
+    for eval_dir in eval_dirs:
+        print(eval_dir)
+
+    best_pr_curves = []
     for eval_dir in eval_dirs:
         run_name = eval_dir.strip('/').split('/')[-1]
         connect_running_wandb(run_name)
-        update_extractions_figures(eval_dir)
+        best_pr = update_extractions_figures(eval_dir, run_name)
+        best_pr_curves.extend(best_pr)
         # todo: check why it is not possible to also evaluate retrieval again
         wandb.finish()
+
+    connect_running_wandb('eval-all')
+    # Save the best PR curves to a CSV file
+    log_best_pr_curve_wandb(best_pr_curves)
+    wandb.finish()
 
 
 if __name__ == '__main__':
