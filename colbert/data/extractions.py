@@ -52,8 +52,7 @@ class ExtractionResults:
         self.data = data
         self.skip_special = skip_special
 
-        if skip_special:
-            self.data = self.skip_special_data()
+        self.skipped_data = self.skip_special_data()
 
         self.metadata = {} if metadata is None else metadata
         assert type(self.metadata) is dict, f"metadata initialized with type {type(self.metadata)}"
@@ -114,6 +113,8 @@ class ExtractionResults:
         return len(self.data)
 
     def __getitem__(self, idx):
+        if self.skip_special:
+            return self.skipped_data[idx]
         return self.data[idx]
 
     def skip_special_data(self):
@@ -131,10 +132,11 @@ class ExtractionResults:
                 assert np.all(np.array(d[k][:2]) == 0), 'Removing non-zero scores'
                 assert np.all(np.array(d[k][-1]) == 0), 'Removing non-zero scores'
 
+            new_d = d.copy()
             for k in keys_remove_special:
                 # Remove first two -> [CLS] [D]
                 # Remove last one -> [SEP]
-                d[k] = d[k][2:-1]
-            new_data.append(d)
+                new_d[k] = new_d[k][2:-1]
+            new_data.append(new_d)
 
         return new_data
