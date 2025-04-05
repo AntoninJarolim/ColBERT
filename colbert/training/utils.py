@@ -1,6 +1,7 @@
 import os
 import torch
 
+from colbert.infra import ColBERTConfig
 # from colbert.utils.runs import Run
 from colbert.utils.utils import print_message, save_checkpoint
 from colbert.parameters import SAVED_CHECKPOINTS
@@ -12,9 +13,7 @@ def print_progress(scores):
     print("#>>>   ", positive_avg, negative_avg, '\t\t|\t\t', positive_avg - negative_avg)
 
 
-def manage_checkpoints(args, colbert, optimizer, batch_idx, savepath=None, consumed_all_triples=False):
-    # arguments = dict(args)
-
+def manage_checkpoints(config: ColBERTConfig, colbert, optimizer, batch_idx, savepath=None, consumed_all_triples=False):
     # TODO: Call provenance() on the values that support it??
 
     checkpoints_path = savepath or os.path.join(Run().path_, 'checkpoints')
@@ -30,7 +29,12 @@ def manage_checkpoints(args, colbert, optimizer, batch_idx, savepath=None, consu
     
     path_save = None
 
-    if batch_idx % 300 == 0 or consumed_all_triples:
+    if batch_idx <= 1200:
+        checkpoint_at = 300
+    else:
+        checkpoint_at = max(300 * config.epochs, 1000)
+
+    if batch_idx % checkpoint_at == 0 or consumed_all_triples:
         # name = os.path.join(path, "colbert.dnn")
         # save_checkpoint(name, 0, batch_idx, colbert, optimizer, arguments)
         path_save = os.path.join(checkpoints_path, f"colbert-{batch_idx}")
