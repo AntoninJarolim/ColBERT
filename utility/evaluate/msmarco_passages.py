@@ -15,7 +15,8 @@ from colbert.data import TranslateAbleCollection
 from colbert.utils.utils import print_message, file_tqdm
 
 
-def evaluate_ms_marco_ranking(collection_path, qrels_path, ranking_path, output_annotations=None, annotate=None):
+def evaluate_ms_marco_ranking(collection_path, qrels_path, ranking_path,
+                              output_annotations=None, annotate=None, silent=False):
     qid2positives = defaultdict(list)
     qid2ranking = defaultdict(list)
     qid2mrr = {}
@@ -26,7 +27,8 @@ def evaluate_ms_marco_ranking(collection_path, qrels_path, ranking_path, output_
         collection = TranslateAbleCollection(path=collection_path)
 
     with open(qrels_path) as f:
-        print_message(f"#> Loading QRELs from {qrels_path} ..")
+        if not silent:
+            print_message(f"#> Loading QRELs from {qrels_path} ..")
         for line in file_tqdm(f):
             qid, _, pid, label = map(int, line.strip().split())
             assert label == 1
@@ -34,7 +36,8 @@ def evaluate_ms_marco_ranking(collection_path, qrels_path, ranking_path, output_
             qid2positives[qid].append(pid)
 
     with open(ranking_path) as f:
-        print_message(f"#> Loading ranked lists from {ranking_path} ..")
+        if not silent:
+            print_message(f"#> Loading ranked lists from {ranking_path} ..")
 
         results = defaultdict(list)
         for line in file_tqdm(f):
@@ -58,12 +61,14 @@ def evaluate_ms_marco_ranking(collection_path, qrels_path, ranking_path, output_
     num_ranked_queries = len(qid2ranking)
 
     if num_judged_queries != num_ranked_queries:
-        print()
-        print_message("#> [WARNING] num_judged_queries != num_ranked_queries")
-        print_message(f"#> {num_judged_queries} != {num_ranked_queries}")
-        print()
+        if not silent:
+            print()
+            print_message("#> [WARNING] num_judged_queries != num_ranked_queries")
+            print_message(f"#> {num_judged_queries} != {num_ranked_queries}")
+            print()
 
-    print_message(f"#> Computing MRR@10 for {num_judged_queries} queries.")
+    if not silent:
+        print_message(f"#> Computing MRR@10 for {num_judged_queries} queries.")
 
     for qid in tqdm.tqdm(qid2positives):
         ranking = qid2ranking[qid]
@@ -87,27 +92,30 @@ def evaluate_ms_marco_ranking(collection_path, qrels_path, ranking_path, output_
 
     assert len(qid2mrr) <= num_ranked_queries, (len(qid2mrr), num_ranked_queries)
 
-    print()
     mrr_10 = sum(qid2mrr.values()) / num_judged_queries
     mrr_10_ranked = sum(qid2mrr.values()) / num_ranked_queries
-    print_message(f"#> MRR@10 = {mrr_10}")
-    print_message(f"#> MRR@10 (only for ranked queries) = {mrr_10_ranked}")
-    print()
+    if not silent:
+        print()
+        print_message(f"#> MRR@10 = {mrr_10}")
+        print_message(f"#> MRR@10 (only for ranked queries) = {mrr_10_ranked}")
+        print()
 
     dict_out = {"mrr@10": mrr_10}
     for depth in qid2recall:
         assert len(qid2recall[depth]) <= num_ranked_queries, (len(qid2recall[depth]), num_ranked_queries)
 
-        print()
         metric_sum = sum(qid2recall[depth].values())
-        print_message(f"#> Recall@{depth} = {metric_sum / num_judged_queries}")
-        print_message(f"#> Recall@{depth} (only for ranked queries) = {metric_sum / num_ranked_queries}")
-        print()
+        if not silent:
+            print()
+            print_message(f"#> Recall@{depth} = {metric_sum / num_judged_queries}")
+            print_message(f"#> Recall@{depth} (only for ranked queries) = {metric_sum / num_ranked_queries}")
+            print()
 
         dict_out[f"recall@{depth}"] = metric_sum / num_judged_queries
 
     if annotate:
-        print_message(f"#> Writing annotations to {output_annotations} ..")
+        if not silent:
+            print_message(f"#> Writing annotations to {output_annotations} ..")
 
         with open(output_annotations, 'w') as f:
             for qid in tqdm.tqdm(qid2positives):
