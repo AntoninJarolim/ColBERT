@@ -5,10 +5,13 @@ import subprocess
 import time
 import glob
 import traceback
+from collections import defaultdict
+from datetime import timedelta
 
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers.polling import PollingObserver
 
+from evaluation import downsample_full_fidelity
 from inference import inference_checkpoint_all_datasets
 
 # Configurable parameters
@@ -89,6 +92,27 @@ def find_unprocessed_checkpoints(root_dir, ignore_markfiles):
     """
     pattern = os.path.join(root_dir, '**', 'checkpoints', '*', 'model.safetensors')
     checkpoint_files = glob.glob(pattern, recursive=True)
+
+    # Skip checkpoints with experiments that have way too many checkpoints
+    paths_by_experiment = defaultdict(list)
+    for cp in checkpoint_files:
+        experiment_name = cp.split("/")[3]
+        steps = int(cp.split("/")[-2].split('-')[1])
+        paths_by_experiment[experiment_name].append((cp, steps))
+
+    # sort by steps
+    paths_by_experiment = {k: sorted(v, key=lambda x: x[1]) for k, v in paths_by_experiment.items()}
+
+    # Subsample if too many checkpoints
+    for experiment_name, values in paths_by_experiment.items():
+        paths = [v[0] for v in values]
+        if len(values) > 20:
+            paths = downsample_full_fidelity(paths, 20)
+        paths_by_experiment[experiment_name] = paths
+
+    # Flatten the dictionary back to a list of paths
+    checkpoint_files = [item for sublist in paths_by_experiment.values() for item in sublist]
+
     unprocessed = []
     for cp in checkpoint_files:
         cp_dirname_path = os.path.dirname(cp)
@@ -100,7 +124,9 @@ def find_unprocessed_checkpoints(root_dir, ignore_markfiles):
 
         if ignore_markfiles or not has_marker_file(cp):
             unprocessed.append(cp_dirname_path)
-    return sorted(unprocessed)  # Sort for consistent processing
+
+    unprocessed = sorted(unprocessed)  # Sort for consistent processing
+    return unprocessed
 
 
 class CheckpointEventHandler(FileSystemEventHandler):
@@ -137,11 +163,21 @@ def main():
         os.makedirs(root_dir)  # Directory for watching might not exist yet
 
     # Process any existing unprocessed checkpoints
-    unprocessed = find_unprocessed_checkpoints(root_dir, args.ignore_markfiles)
-    print(f"Found {len(unprocessed)} unprocessed checkpoint(s):")
-    print('\n\t'.join(unprocessed))
-    for cp_path in unprocessed:
-        run_inference(cp_path, args.experiment_name)
+    while True:
+        unprocessed = find_unprocessed_checkpoints(root_dir, args.ignore_markfiles)
+        if not unprocessed:
+            print("All checkpoints have been processed.")
+            break
+
+        print(f"Found {len(unprocessed)} unprocessed checkpoint(s):")
+        print('\n\t'.join(unprocessed))
+        for i, cp_path in enumerate(unprocessed):
+            print(f"\n\n\n\n ({i + 1} / {len(unprocessed)}) Running inference on {cp_path}")
+            time_before = time.time()
+            run_inference(cp_path, args.experiment_name)
+            time_after = time.time()
+            duration = timedelta(seconds=(time_after - time_before))
+            print(f"\n Inference completed in {duration} (HH:MM:SS)\n")
 
     # Set up watchdog observer to monitor for new checkpoint files
     event_handler = CheckpointEventHandler(root_dir, args.experiment_name)

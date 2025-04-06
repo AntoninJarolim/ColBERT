@@ -22,9 +22,9 @@ from colbert.training.training import extraction_stats
 from utility.evaluate.msmarco_passages import evaluate_ms_marco_ranking
 
 
-def _downsample_full_fidelity(data, total_points=1000):
+def downsample_full_fidelity(data, total_points=1000):
     # Number of bins and samples per bin
-    num_bins = 100
+    num_bins = 100 if len(data) > 100 else 1
     samples_per_bin = total_points // num_bins
 
     # Split data into bins
@@ -62,7 +62,7 @@ def _get_pr_data(all_extractions, all_max_scores):
     )
     # Prepare data for wandb Table
     data = list(zip(recall, precision))
-    data = _downsample_full_fidelity(data)
+    data = downsample_full_fidelity(data)
 
     best_f1 = max_f1_score(precision, recall)
     return data, best_f1
@@ -131,7 +131,7 @@ def _evaluate_extractions(all_extractions, all_max_scores, checkpoint_steps, is_
 
 def evaluate_retrieval(ranking_path, qrels_path, collection_path, index_name):
     # Make evaluation of current run
-    out_json = evaluate_ms_marco_ranking(collection_path, qrels_path, ranking_path)
+    out_json = evaluate_ms_marco_ranking(collection_path, qrels_path, ranking_path, silent=True)
     ranking_path_dir = os.path.dirname(ranking_path)
     out_json_path = os.path.join(ranking_path_dir, f"{index_name}.retrieval_evaluation.json")
 
