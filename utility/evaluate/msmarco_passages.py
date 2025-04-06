@@ -29,7 +29,7 @@ def evaluate_ms_marco_ranking(collection_path, qrels_path, ranking_path,
     with open(qrels_path) as f:
         if not silent:
             print_message(f"#> Loading QRELs from {qrels_path} ..")
-        for line in file_tqdm(f):
+        for line in file_tqdm(f, silent=silent):
             qid, _, pid, label = map(int, line.strip().split())
             assert label == 1
 
@@ -40,7 +40,7 @@ def evaluate_ms_marco_ranking(collection_path, qrels_path, ranking_path,
             print_message(f"#> Loading ranked lists from {ranking_path} ..")
 
         results = defaultdict(list)
-        for line in file_tqdm(f):
+        for line in file_tqdm(f, silent=silent):
             qid, *rest = line.strip().split('\t')
             results[int(qid)].append(rest)
 
@@ -70,7 +70,7 @@ def evaluate_ms_marco_ranking(collection_path, qrels_path, ranking_path,
     if not silent:
         print_message(f"#> Computing MRR@10 for {num_judged_queries} queries.")
 
-    for qid in tqdm.tqdm(qid2positives):
+    for qid in tqdm.tqdm(qid2positives, disable=silent):
         ranking = qid2ranking[qid]
         positives = qid2positives[qid]
 
@@ -118,7 +118,7 @@ def evaluate_ms_marco_ranking(collection_path, qrels_path, ranking_path,
             print_message(f"#> Writing annotations to {output_annotations} ..")
 
         with open(output_annotations, 'w') as f:
-            for qid in tqdm.tqdm(qid2positives):
+            for qid in tqdm.tqdm(qid2positives, disable=silent):
                 ranking = qid2ranking[qid]
                 positives = qid2positives[qid]
 

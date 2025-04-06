@@ -44,7 +44,7 @@ def is_gpu_idle():
         return False
 
 
-def run_inference(checkpoint_path, experiment_name):
+def run_inference(checkpoint_path, run_eval):
     """
     Wait until GPU is idle and run inference on the given checkpoint.
     Then, create a marker file to indicate that this checkpoint has been processed.
@@ -60,7 +60,7 @@ def run_inference(checkpoint_path, experiment_name):
 
     print(f"Running inference on checkpoint: {checkpoint_path}")
 
-    results_dir = inference_checkpoint_all_datasets(checkpoint_path)
+    results_dir = inference_checkpoint_all_datasets(checkpoint_path, run_eval=run_eval)
     try:
         # After successful inference, mark the checkpoint as processed
         marker_file = create_marker_file_str(checkpoint_path)
@@ -142,7 +142,7 @@ class CheckpointEventHandler(FileSystemEventHandler):
     def on_created(self, event):
         if not event.is_directory and event.src_path.endswith('model.safetensors'):
             print(f"New checkpoint detected: {event.src_path}")
-            run_inference(os.path.dirname(event.src_path), self.experiment_name)
+            run_inference(os.path.dirname(event.src_path), True)
         else:
             print(f"Ignoring event: {event}")
 
@@ -174,7 +174,8 @@ def main():
         for i, cp_path in enumerate(unprocessed):
             print(f"\n\n\n\n ({i + 1} / {len(unprocessed)}) Running inference on {cp_path}")
             time_before = time.time()
-            run_inference(cp_path, args.experiment_name)
+            run_eval = i + 1 == len(unprocessed)
+            run_inference(cp_path, run_eval)
             time_after = time.time()
             duration = timedelta(seconds=(time_after - time_before))
             print(f"\n Inference completed in {duration} (HH:MM:SS)\n")

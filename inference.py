@@ -94,7 +94,7 @@ def connect_running_wandb(run_name):
     wandb.init(project=project_name, name=run_name)
 
 
-def inference_checkpoint_all_datasets(checkpoint):
+def inference_checkpoint_all_datasets(checkpoint, run_eval=True):
     datasets = {
         'official_dev_small': {
             'collection_path': 'data/evaluation/collection.dev.small_50-25-25.tsv',
@@ -111,14 +111,15 @@ def inference_checkpoint_all_datasets(checkpoint):
     }
 
     eval_datasets = []
-    for collection_name, data in datasets.items():
+    for idx_dataset, (collection_name, data) in enumerate(datasets.items()):
         eval_dataset = inference_checkpoint_one_dataset(
             checkpoint,
             collection_name,
             data['collection_path'],
             data['queries_path'],
             data['extraction_path'],
-            data['qrels_path']
+            data['qrels_path'],
+            run_eval=run_eval and idx_dataset == len(datasets) - 1
         )
         eval_datasets.append(eval_dataset)
 
@@ -135,6 +136,7 @@ def inference_checkpoint_one_dataset(
         queries_path,
         extraction_path,
         qrels_path,
+        run_eval=True
 ):
     # inference
     root_folder = 'experiments'
@@ -195,13 +197,14 @@ def inference_checkpoint_one_dataset(
     connect_running_wandb(run_name)
     wandb.config.update(log_config, allow_val_change=True)
 
+    assert os.path.dirname(max_ranking_path) == os.path.dirname(ranking_path)
     eval_dir = os.path.dirname(max_ranking_path)
-    assert eval_dir == os.path.dirname(ranking_path)
 
-    if qrels_path is not None:
-        update_retrieval_figures(eval_dir, qrels_path, collection_path)
-    update_extractions_figures(eval_dir, run_name)
-    wandb.finish()
+    if run_eval:
+        if qrels_path is not None:
+            update_retrieval_figures(eval_dir, qrels_path, collection_path)
+        update_extractions_figures(eval_dir, run_name)
+        wandb.finish()
 
     return eval_dir
 

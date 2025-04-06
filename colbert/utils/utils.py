@@ -26,10 +26,10 @@ def timestamp(daydir=False):
     return result
 
 
-def file_tqdm(file):
+def file_tqdm(file, silent=False):
     print(f"#> Reading {file.name}")
 
-    with tqdm.tqdm(total=os.path.getsize(file.name) / 1024.0 / 1024.0, unit="MiB") as pbar:
+    with tqdm.tqdm(total=os.path.getsize(file.name) / 1024.0 / 1024.0, unit="MiB", disable=silent) as pbar:
         for line in file:
             yield line
             pbar.update(len(line) / 1024.0 / 1024.0)
