@@ -93,6 +93,8 @@ class ColBERT(BaseColBERT):
 
         if self.colbert_config.add_max_linear:
             Q2 = self.linear_max(encoded)
+        elif self.colbert_config.add_extraction_ffn:
+            Q2 = self.extraction_ffn(Q)
         else:
             Q2 = Q
 
@@ -114,6 +116,8 @@ class ColBERT(BaseColBERT):
 
         if self.colbert_config.add_max_linear:
             D2 = self.linear_max(encoded)
+        elif self.colbert_config.add_extraction_ffn:
+            D2 = self.extraction_ffn(D)
         else:
             D2 = D
 

@@ -181,6 +181,8 @@ class TrainingSettings:
 
     add_max_linear: bool = DefaultVal(False)
 
+    add_extraction_ffn: bool = DefaultVal(False)
+
     epochs: int = DefaultVal(1)
 
 

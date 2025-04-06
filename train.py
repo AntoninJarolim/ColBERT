@@ -7,7 +7,7 @@ from colbert.infra.config import ColBERTConfig, RunConfig
 from colbert import Trainer
 
 
-def train(experiment, ngpus, ex_lambda, accumsteps, checkpoint, add_max_linear, epochs):
+def train(experiment, ngpus, ex_lambda, accumsteps, checkpoint, add_max_linear, epochs, add_extraction_ffn):
     with Run().context(RunConfig(nranks=ngpus, experiment=experiment)):
         triples_path = 'data/training/examples_with_relevancy.jsonl'
         queries_path = 'data/training/queries.train.tsv'
@@ -15,7 +15,7 @@ def train(experiment, ngpus, ex_lambda, accumsteps, checkpoint, add_max_linear, 
         extractions_path = 'data/training/extracted_relevancy_800k_unique.tsv'
 
         one_bsize = 64
-        config = ColBERTConfig(bsize=one_bsize * ngpus, lr=1e-05, warmup=20_000,
+        config = ColBERTConfig(bsize=one_bsize * ngpus, lr=1e-05, warmup=20_000, add_extraction_ffn=add_extraction_ffn,
                                doc_maxlen=180, dim=128, attend_to_mask_tokens=False, epochs=epochs,
                                return_max_scores=True, extractions_lambda=ex_lambda, add_max_linear=add_max_linear,
                                nway=64, accumsteps=accumsteps, similarity='cosine', use_ib_negatives=True)
@@ -36,11 +36,14 @@ def arg_parse():
     parser.add_argument('--checkpoint', type=str,
                         default='colbert-ir/colbertv1.9', help='Checkpoint to start training from')
     parser.add_argument('--add_max_linear', action='store_true', help='Add max linear layer', default=False)
+    parser.add_argument('--add_extraction_ffn', action='store_true',
+                        help='Adds another linear+residual+non-linear on top of retrieval. ', default=False)
     return parser.parse_args()
 
 
 if __name__ == '__main__':
     args = arg_parse()
+    assert not (args.add_extraction_ffn and args.add_max_linear), "add_next_layer and add_max_linear cannot be used together"
     train(
         args.experiment,
         args.ngpus,
@@ -48,6 +51,7 @@ if __name__ == '__main__':
         args.accumsteps,
         args.checkpoint,
         args.add_max_linear,
-        args.epochs
+        args.epochs,
+        args.add_extraction_ffn,
     )
 
