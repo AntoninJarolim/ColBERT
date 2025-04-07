@@ -262,8 +262,16 @@ def extraction_stats(ex_loss, masked_scores, targets_masked):
     recall = thresholded[targets_masked.bool()].float().sum() / targets_masked.float().sum()
     precision = thresholded[targets_masked.bool()].float().sum() / thresholded.sum()
 
-    var, mean = torch.var_mean(probs[targets_masked.bool()])
-    var0, mean0 = torch.var_mean(probs[~targets_masked.bool()])
+    if len(probs[targets_masked.bool()]) > 3:
+        var, mean = torch.var_mean(probs[targets_masked.bool()])
+    else:
+        var, mean = np.nan, np.nan
+
+    if len(probs[~targets_masked.bool()]) > 3:
+        var0, mean0 = torch.var_mean(probs[~targets_masked.bool()])
+    else:
+        var0, mean0 = np.nan, np.nan
+
     return {
         "extractions_loss": ex_loss,
         "extraction_accuracy": acc,

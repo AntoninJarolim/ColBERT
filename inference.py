@@ -1,6 +1,8 @@
 import argparse
 import glob
 import os.path
+import time
+from datetime import timedelta
 
 import wandb
 
@@ -10,6 +12,21 @@ from colbert.data import Queries
 from colbert.infra import Run, RunConfig, ColBERTConfig
 from colbert import Searcher
 from evaluation import update_retrieval_figures, update_extractions_figures, log_best_pr_curve_wandb
+
+DATASETS = {
+    'official_dev_small': {
+        'collection_path': 'data/evaluation/collection.dev.small_50-25-25.tsv',
+        'queries_path': 'data/evaluation/queries.dev.small_ex_only.tsv',
+        'extraction_path': 'data/evaluation/extracted_relevancy_qrels.dev.small.tsv',
+        'qrels_path': 'data/evaluation/qrels.dev.small_ex_only.tsv',
+    },
+    '35_samples': {
+        'collection_path': 'data/evaluation/collection.35_sample_dataset.tsv',
+        'queries_path': 'data/evaluation/queries.eval.35_sample_dataset.tsv',
+        'extraction_path': 'data/evaluation/extracted_relevancy_35_sample_dataset.tsv',
+        'qrels_path': None
+    }
+}
 
 
 def remove_prefix(text, prefix):
@@ -95,23 +112,8 @@ def connect_running_wandb(run_name):
 
 
 def inference_checkpoint_all_datasets(checkpoint, run_eval=True):
-    datasets = {
-        'official_dev_small': {
-            'collection_path': 'data/evaluation/collection.dev.small_50-25-25.tsv',
-            'queries_path': 'data/evaluation/queries.dev.small_ex_only.tsv',
-            'extraction_path': 'data/evaluation/extracted_relevancy_qrels.dev.small.tsv',
-            'qrels_path': 'data/evaluation/qrels.dev.small_ex_only.tsv',
-        },
-        '35_samples': {
-            'collection_path': 'data/evaluation/collection.35_sample_dataset.tsv',
-            'queries_path': 'data/evaluation/queries.eval.35_sample_dataset.tsv',
-            'extraction_path': 'data/evaluation/extracted_relevancy_35_sample_dataset.tsv',
-            'qrels_path': None
-        }
-    }
-
     eval_datasets = []
-    for idx_dataset, (collection_name, data) in enumerate(datasets.items()):
+    for idx_dataset, (collection_name, data) in enumerate(DATASETS.items()):
         eval_dataset = inference_checkpoint_one_dataset(
             checkpoint,
             collection_name,
@@ -119,7 +121,7 @@ def inference_checkpoint_all_datasets(checkpoint, run_eval=True):
             data['queries_path'],
             data['extraction_path'],
             data['qrels_path'],
-            run_eval=run_eval and idx_dataset == len(datasets) - 1
+            run_eval=run_eval and idx_dataset == len(DATASETS) - 1
         )
         eval_datasets.append(eval_dataset)
 
@@ -204,8 +206,8 @@ def inference_checkpoint_one_dataset(
         if qrels_path is not None:
             update_retrieval_figures(eval_dir, qrels_path, collection_path)
         update_extractions_figures(eval_dir, run_name)
-        wandb.finish()
 
+    wandb.finish()
     return eval_dir
 
 
@@ -247,13 +249,23 @@ def main():
         print(eval_dir)
 
     best_pr_curves = []
-    for eval_dir in eval_dirs:
+    for i, eval_dir in enumerate(eval_dirs):
+        print(f"\n\n\n\n ({i + 1} / {len(eval_dirs)}) Evaluation of dir: {eval_dirs}")
         run_name = eval_dir.strip('/').split('/')[-1]
+
+        time_before = time.time()
+
         connect_running_wandb(run_name)
         best_pr = update_extractions_figures(eval_dir, run_name)
         best_pr_curves.extend(best_pr)
-        # todo: check why it is not possible to also evaluate retrieval again
+        update_retrieval_figures(
+            eval_dir,
+            DATASETS['official_dev_small']['qrels_path'],
+            DATASETS['official_dev_small']['collection_path']
+        )
         wandb.finish()
+
+        print(f"\n Inference completed in {timedelta(seconds=(time.time() - time_before))} (HH:MM:SS)\n")
 
     connect_running_wandb('eval-all')
     # Save the best PR curves to a CSV file
