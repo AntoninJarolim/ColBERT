@@ -7,7 +7,8 @@ from colbert.infra.config import ColBERTConfig, RunConfig
 from colbert import Trainer
 
 
-def train(experiment, ngpus, ex_lambda, accumsteps, checkpoint, add_max_linear, epochs, add_extraction_ffn):
+def train(experiment, ngpus, ex_lambda, accumsteps, checkpoint, add_max_linear, epochs, add_extraction_ffn,
+          skip_ffn_norm):
     with Run().context(RunConfig(nranks=ngpus, experiment=experiment)):
         triples_path = 'data/training/examples_with_relevancy.jsonl'
         queries_path = 'data/training/queries.train.tsv'
@@ -17,6 +18,7 @@ def train(experiment, ngpus, ex_lambda, accumsteps, checkpoint, add_max_linear, 
         one_bsize = 64
         config = ColBERTConfig(bsize=one_bsize * ngpus, lr=1e-05, warmup=20_000, add_extraction_ffn=add_extraction_ffn,
                                doc_maxlen=180, dim=128, attend_to_mask_tokens=False, epochs=epochs,
+                               skip_ffn_norm=skip_ffn_norm,
                                return_max_scores=True, extractions_lambda=ex_lambda, add_max_linear=add_max_linear,
                                nway=64, accumsteps=accumsteps, similarity='cosine', use_ib_negatives=True)
         trainer = Trainer(triples=triples_path, queries=queries_path, collection=collection_path,
@@ -38,12 +40,15 @@ def arg_parse():
     parser.add_argument('--add_max_linear', action='store_true', help='Add max linear layer', default=False)
     parser.add_argument('--add_extraction_ffn', action='store_true',
                         help='Adds another linear+residual+non-linear on top of retrieval. ', default=False)
+    parser.add_argument('--skip_ffn_norm', action='store_true',
+                        help='Skips normalization in the add_extraction_ffn layer', default=False)
     return parser.parse_args()
 
 
 if __name__ == '__main__':
     args = arg_parse()
-    assert not (args.add_extraction_ffn and args.add_max_linear), "add_next_layer and add_max_linear cannot be used together"
+    assert not (
+                args.add_extraction_ffn and args.add_max_linear), "add_next_layer and add_max_linear cannot be used together"
     train(
         args.experiment,
         args.ngpus,
@@ -53,5 +58,5 @@ if __name__ == '__main__':
         args.add_max_linear,
         args.epochs,
         args.add_extraction_ffn,
+        args.skip_ffn_norm,
     )
-

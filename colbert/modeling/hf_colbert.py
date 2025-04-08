@@ -106,7 +106,10 @@ def class_factory(name_or_path):
                 self.linear_max = nn.Linear(config.hidden_size, colbert_config.dim, bias=False)
 
             if colbert_config.add_extraction_ffn:
-                self.extraction_ffn = TransformerFFN(d_model=colbert_config.dim, d_ff=config.hidden_size, dropout=0.1)
+                self.extraction_ffn = TransformerFFN(d_model=colbert_config.dim,
+                                                     d_ff=config.hidden_size,
+                                                     dropout=0.1,
+                                                     skip_norm=colbert_config.skip_ffn_norm)
 
             setattr(self, self.base_model_prefix, model_class_object(config))
 
@@ -161,8 +164,10 @@ def class_factory(name_or_path):
 
 
 class TransformerFFN(nn.Module):
-    def __init__(self, d_model=128, d_ff=768, dropout=0.1):
+    def __init__(self, d_model=128, d_ff=768, dropout=0.1, skip_norm=False):
         super().__init__()
+        self.skip_norm = skip_norm
+
         self.ff = nn.Sequential(
             nn.Linear(d_model, d_ff),
             nn.ReLU(),
@@ -173,4 +178,6 @@ class TransformerFFN(nn.Module):
         self.norm = nn.LayerNorm(d_model)
 
     def forward(self, x):
+        if self.skip_norm:
+            return x + self.ff(x)
         return self.norm(x + self.ff(x))

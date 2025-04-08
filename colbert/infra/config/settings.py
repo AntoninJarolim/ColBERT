@@ -185,6 +185,8 @@ class TrainingSettings:
 
     epochs: int = DefaultVal(1)
 
+    skip_ffn_norm: bool = DefaultVal(False)
+
 
 @dataclass
 class IndexingSettings:
