@@ -1,4 +1,6 @@
 import os
+import time
+
 import torch
 import math
 
@@ -96,6 +98,21 @@ class Searcher:
                                        total=len(qids))
         }
 
+        # Search time benchmark setup
+        times = [val['time'] for val in all_scored_pids.values()]
+
+        def print_times(times):
+            times = torch.tensor(times, dtype=torch.float64)
+            # times = times * 1000
+            # print with exponential notation
+            # print("times:", times)
+            print(f"Mean: {times.mean().item():.6e}")
+            std = times.std(unbiased=False).item()
+            print(f"Std Dev: {std:.6e}")
+            print()
+
+        # print_times(times)
+
         # note: all_scored_pids may also contain max_scores
         ranking_data = {qid: (val['pids'], val['ranking'], val['scores']) for qid, val in all_scored_pids.items()}
         provenance = Provenance()
@@ -130,12 +147,15 @@ class Searcher:
             if self.config.ndocs is None:
                 self.configure(ndocs=max(k * 4, 4096))
 
+        time_before = time.perf_counter()
         pids, scores = self.ranker.rank(self.config, Q, filter_fn=filter_fn, pids=pids)
+        time_after = time.perf_counter()
 
         return {
             'pids': pids[:k],
             'ranking': list(range(1, k + 1)),
             'scores': scores[:k],
+            'time': time_after - time_before,
         }
 
     def search_extractions(self, queries, extractions):

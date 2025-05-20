@@ -181,3 +181,5 @@ class TransformerFFN(nn.Module):
         if self.skip_norm:
             return x + self.ff(x)
         return self.norm(x + self.ff(x))
+
+

@@ -39,7 +39,17 @@ data_paths = {
         'collection_path': "data/evaluation/collection.35_sample_dataset.tsv",
         'queries_path': "data/evaluation/queries.eval.35_sample_dataset.tsv",
         'collection_length': 35
-    }
+    },
+    'human_explained': {
+        'collection_path': 'data/evaluation/collection.ms-marco-human-explained.tsv',
+        'queries_path': 'data/evaluation/queries.eval.ms-marco-human-explained.tsv',
+        'collection_length': 140
+    },
+    'md2d-sample': {
+        'collection_path': 'data/evaluation/collection.md2d_dataset.tsv',
+        'queries_path': 'data/evaluation/queries.eval.accuracy_dataset.tsv',
+        'collection_length': 1
+    },
 }
 
 
@@ -106,7 +116,8 @@ with st.sidebar:
     set_data["nr_columns"] = st.selectbox('Number of columns:',
                                           [1, 2, 3, 4, 5], key="nr_columns")
     set_data["dataset"] = st.selectbox('Dataset:',
-                                       ['official_dev_small', '35_samples'], key="dataset")
+                                       data_paths.keys(),
+                                       key="dataset")
 
     "### Data loading"
     set_data["start_data_id"] = st.selectbox('First id to show:',
@@ -217,7 +228,6 @@ def init_layout(nr_columns):
 
 data_columns = init_layout(set_data["nr_columns"])
 
-
 for col_idx, data_column in enumerate(data_columns):
     with data_column:
         # Select and get data
@@ -230,7 +240,7 @@ for col_idx, data_column in enumerate(data_columns):
         viz_data = get_viz_data(current_cp['inference_path'], current_cp['steps'], set_data["dataset"])
 
         # Decide thresholding
-        threshold = st.toggle("Thresholding", value=True,  key=f"threshold_togg_{col_idx}")
+        threshold = st.toggle("Thresholding", value=False, key=f"threshold_togg_{col_idx}")
         if threshold:
             recall_thresholds = compute_all_recall_thresholds(viz_data)
 

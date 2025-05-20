@@ -8,7 +8,11 @@ def _load_file(path):
     data = {}
     with open(path) as reader:
         for line in reader:
-            q_id, psg_id, _, *span_list = line.strip().split('\t')
+            try:
+                q_id, psg_id, _, *span_list = line.strip().split('\t')
+            except ValueError:
+                print(f"Error parsing line: {line.strip()} in file {path}")
+                exit(4)
             q_id, psg_id = int(q_id), int(psg_id)
             data[(q_id, psg_id)] = span_list
 

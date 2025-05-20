@@ -44,7 +44,7 @@ def is_gpu_idle():
         return False
 
 
-def run_inference(checkpoint_path, run_eval):
+def run_inference(checkpoint_path, run_eval, extractions_only_datasets=False):
     """
     Wait until GPU is idle and run inference on the given checkpoint.
     Then, create a marker file to indicate that this checkpoint has been processed.
@@ -60,7 +60,8 @@ def run_inference(checkpoint_path, run_eval):
 
     print(f"Running inference on checkpoint: {checkpoint_path}")
 
-    results_dir = inference_checkpoint_all_datasets(checkpoint_path, run_eval=run_eval)
+    results_dir = inference_checkpoint_all_datasets(checkpoint_path, run_eval=run_eval,
+                                                   extractions_only_datasets=extractions_only_datasets)
     try:
         # After successful inference, mark the checkpoint as processed
         marker_file = create_marker_file_str(checkpoint_path)
@@ -152,6 +153,7 @@ def main():
     parser.add_argument('--experiment_name', type=str,
                         help='Name of current experiment to look for data in experiments/')
     parser.add_argument('--ignore-markfiles', action='store_true',)
+    parser.add_argument('--extractions-only-datasets', action='store_true',)
     args = parser.parse_args()
     
     if args.experiment_name == "all":
@@ -171,11 +173,12 @@ def main():
 
         print(f"Found {len(unprocessed)} unprocessed checkpoint(s):")
         print('\n\t'.join(unprocessed))
+        unprocessed = unprocessed[186:]
         for i, cp_path in enumerate(unprocessed):
             print(f"\n\n\n\n ({i + 1} / {len(unprocessed)}) Running inference on {cp_path}")
             time_before = time.time()
             run_eval = i + 1 == len(unprocessed)
-            run_inference(cp_path, run_eval)
+            run_inference(cp_path, run_eval, args.extractions_only_datasets)
             time_after = time.time()
             duration = timedelta(seconds=(time_after - time_before))
             print(f"\n Inference completed in {duration} (HH:MM:SS)\n")

@@ -53,9 +53,6 @@ class Indexer:
                 print_message(f"#> Will delete {len(deleted)} files already at {directory} in {sleep_time} seconds...")
                 time.sleep(sleep_time)
 
-            for filename in deleted:
-                os.remove(filename)
-
         return deleted
 
     def index(self, name, collection, overwrite=False):
