@@ -27,11 +27,16 @@ def load_datasets(json_path: str):
     return datasets
 
 
-def get_datasets(json_path: str, dataset_names: list[str]):
+def get_datasets(json_path: str, dataset_names):
     """Return datasets specified in dataset_names."""
     datasets = load_datasets(json_path)
-    filtered = {}
 
+    # If no dataset names are provided, return all datasets
+    if not dataset_names:
+        return datasets
+
+    # Filter datasets based on provided names
+    filtered = {}
     for name in dataset_names:
         if name not in datasets:
             raise ValueError(f"Dataset '{name}' not found. Available: {list(datasets.keys())}")
@@ -239,9 +244,8 @@ def parse_args():
     parser.add_argument("--datasets_json", default="datasets.json", help="Path to datasets JSON file")
     parser.add_argument(
         "--eval_datasets",
-        required=True,
         nargs="+",
-        help="Dataset name(s) to filter"
+        help="Dataset name(s) to filter. Filtering will not be applied if not provided."
     )
 
     parsed_args = parser.parse_args()
