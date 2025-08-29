@@ -366,7 +366,8 @@ def inference_checkpoint_all_datasets(
         datasets,
         checkpoint_path,
         run_eval=run_eval,
-        extractions_only_datasets=extractions_only_datasets)
+        extractions_only_datasets=extractions_only_datasets
+    )
 
 def main():
     args = parse_args()
@@ -379,8 +380,7 @@ def main():
         eval_dirs = find_all_results_dirs()
         print("Evaluating found directories:\n" + '\n'.join([f'\t{e_dir}' for e_dir in eval_dirs]))
         evaluate_all_dirs(eval_dirs, args.save_all_experiments_stats, args.save_all_best_pr_curves)
-
-    run_aggregated_eval(args.datasets, args.save_all_experiments_stats)
+        run_aggregated_eval(args.datasets, args.save_all_experiments_stats)
 
 
 if __name__ == '__main__':
