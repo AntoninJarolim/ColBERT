@@ -101,7 +101,7 @@ def get_checkpoint_steps(checkpoint):
     return checkpoint_steps
 
 
-def inference_checkpoint(
+def inference_checkpoint_all_datasets(
         datasets, checkpoint, run_eval=True, extractions_only_datasets=False):
     eval_datasets = []
 
@@ -221,10 +221,6 @@ def parse_args():
 
     # Run inference on concrete checkpoint
     parser.add_argument('--checkpoint', type=str, help='Path to the checkpoint', default=None)
-    parser.add_argument('--load_inference_dir', type=str, default=None,
-                        help='Path to dir with ranking and evaluation. Inference wont be run if provided')
-
-    parser.add_argument('--load_eval_stats', action='store_true', default=False)
 
     parser.add_argument(
         '--save_all_experiments_stats',
@@ -356,31 +352,22 @@ def save_all_stats(
         writer.write_all(best_pr_curves_dev_thresholded)
 
 
-def inference_checkpoint_all_datasets(
-        checkpoint_path,
-        run_eval,
-        extractions_only_datasets):
-
-    datasets = load_datasets('datasets.json')
-    inference_checkpoint(
-        datasets,
-        checkpoint_path,
-        run_eval=run_eval,
-        extractions_only_datasets=extractions_only_datasets
-    )
-
 def main():
     args = parse_args()
 
     # Evaluate specific checkpoint
     if args.checkpoint is not None:
-        inference_checkpoint(args.datasets, args.checkpoint)
+        datasets = load_datasets(args.datasets_json)
+        inference_checkpoint_all_datasets(
+            datasets,
+            args.checkpoint
+        )
 
     if args.evaluate_all_dirs:
         eval_dirs = find_all_results_dirs()
         print("Evaluating found directories:\n" + '\n'.join([f'\t{e_dir}' for e_dir in eval_dirs]))
         evaluate_all_dirs(eval_dirs, args.save_all_experiments_stats, args.save_all_best_pr_curves)
-        run_aggregated_eval(args.datasets, args.save_all_experiments_stats)
+        run_aggregated_eval(args.datasets_json, args.save_all_experiments_stats)
 
 
 if __name__ == '__main__':
