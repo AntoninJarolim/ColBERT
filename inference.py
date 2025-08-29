@@ -1,5 +1,6 @@
 import argparse
 import glob
+import json
 import os.path
 import time
 from datetime import timedelta
@@ -7,57 +8,36 @@ from datetime import timedelta
 import wandb
 from jsonlines import jsonlines
 
-from colbert.infra import Run, RunConfig, ColBERTConfig
 from colbert import Indexer
 from colbert.data import Queries
 from colbert.infra import Run, RunConfig, ColBERTConfig
 from colbert import Searcher
-from evaluation import (
-    update_retrieval_figures,
-    update_extractions_figures,
-    log_best_pr_curve_wandb,
-    get_best_pr_data_by_f1,
-    downsample_full_fidelity, log_pareto_optimal_solutions, add_dev_thresholded_f1s
-)
 
-DATASETS = {
-    'md2d-sample': {
-        'collection_path': 'data/evaluation/collection.md2d_dataset.tsv',
-        'queries_path': 'data/evaluation/queries.eval.accuracy_dataset.tsv',
-        'extraction_path': 'data/evaluation/extracted_relevancy_md2d.tsv',
-        'qrels_path': None,
-    },
-    # 'accuracy_dataset_pos': {
-    #     'collection_path': 'data/evaluation/collection.accuracy_dataset.tsv',
-    #     'queries_path': 'data/evaluation/queries.eval.accuracy_dataset.tsv',
-    #     'extraction_path': 'data/evaluation/extracted_relevancy_accuracy_dataset_first_30_lines.tsv',
-    #     'qrels_path': None,
-    # },
-    # 'accuracy_dataset_neg': {
-    #     'collection_path': 'data/evaluation/collection.accuracy_dataset.tsv',
-    #     'queries_path': 'data/evaluation/queries.eval.accuracy_dataset.tsv',
-    #     'extraction_path': 'data/evaluation/extracted_relevancy_accuracy_dataset_last_30_lines.tsv',
-    #     'qrels_path': None,
-    # },
-    # 'official_dev_small': {
-    #     'collection_path': 'data/evaluation/collection.dev.small_50-25-25.tsv',
-    #     'queries_path': 'data/evaluation/queries.dev.small_ex_only.tsv',
-    #     'extraction_path': 'data/evaluation/extracted_relevancy_qrels.dev.small.tsv',
-    #     'qrels_path': 'data/evaluation/qrels.dev.small_ex_only.tsv',
-    # },
-    # '35_samples': {
-    #     'collection_path': 'data/evaluation/collection.35_sample_dataset.tsv',
-    #     'queries_path': 'data/evaluation/queries.eval.35_sample_dataset.tsv',
-    #     'extraction_path': 'data/evaluation/extracted_relevancy_35_sample_dataset.tsv',
-    #     'qrels_path': None
-    # },
-    # 'human_explained': {
-    #     'collection_path': 'data/evaluation/collection.ms-marco-human-explained.tsv',
-    #     'queries_path': 'data/evaluation/queries.eval.ms-marco-human-explained.tsv',
-    #     'extraction_path': 'data/evaluation/extracted_relevancy_ms-marco-human-explained.tsv',
-    #     'qrels_path': None
-    # }
-}
+from evaluate.aggregated_runs import run_aggregated_eval, get_dev_thresholded_filename
+from evaluate.extractions import update_extractions_figures, add_dev_thresholded_f1s, get_best_pr_data_by_f1, \
+    downsample_full_fidelity
+from evaluate.retrieval import update_retrieval_figures, get_coll_agg_retrieval_data
+from evaluate.wandb_logging import wandb_connect_running
+
+
+def load_datasets(json_path: str):
+    """Load datasets from JSON file."""
+    with open(json_path, "r", encoding="utf-8") as f:
+        datasets = json.load(f)
+    return datasets
+
+
+def get_datasets(json_path: str, dataset_names: list[str]):
+    """Return datasets specified in dataset_names."""
+    datasets = load_datasets(json_path)
+    filtered = {}
+
+    for name in dataset_names:
+        if name not in datasets:
+            raise ValueError(f"Dataset '{name}' not found. Available: {list(datasets.keys())}")
+        filtered[name] = datasets[name]
+
+    return filtered
 
 
 def remove_prefix(text, prefix):
@@ -121,35 +101,15 @@ def get_checkpoint_steps(checkpoint):
     return checkpoint_steps
 
 
-def connect_running_wandb(run_name):
-    api = wandb.Api()
-
-    # Replace with your project name
-    project_name = 'eval-' + Run().config.project_name
-    entity = Run().config.wandb_entity
-    run_name = 'eval_' + run_name
-
-    # Fetch all runs in the project
-    runs = api.runs(f"{entity}/{project_name}")
-
-    # Find the run with the specified name
-    for run in runs:
-        if run.name == run_name:
-            print(f"Resuming found run ID: {run.id}")
-            wandb.init(project=project_name, id=run.id, resume="must")
-
-    print("\n\nStarting new eval run with name:", run_name)
-    wandb.init(project=project_name, name=run_name)
-
-
-def inference_checkpoint_all_datasets(checkpoint, run_eval=True, extractions_only_datasets=False):
+def inference_checkpoint(
+        datasets, checkpoint, run_eval=True, extractions_only_datasets=False):
     eval_datasets = []
 
     if extractions_only_datasets:
         # qrels_path is None -> dataset does not have retrieval annotations
-        eval_sets = {k: v for k, v in DATASETS.items() if v['qrels_path'] is None}
+        eval_sets = {k: v for k, v in datasets.items() if v['qrels_path'] is None}
     else:
-        eval_sets = DATASETS
+        eval_sets = datasets
 
     for idx_dataset, (collection_name, data) in enumerate(eval_sets.items()):
         eval_dataset = inference_checkpoint_one_dataset(
@@ -159,7 +119,7 @@ def inference_checkpoint_all_datasets(checkpoint, run_eval=True, extractions_onl
             data['queries_path'],
             data['extraction_path'],
             data['qrels_path'],
-            run_eval=run_eval and idx_dataset == len(DATASETS) - 1
+            run_eval=run_eval and idx_dataset == len(datasets) - 1
         )
         eval_datasets.append(eval_dataset)
 
@@ -234,7 +194,7 @@ def inference_checkpoint_one_dataset(
         'ranking_path': ranking_path,
         'max_ranking_path': max_ranking_path
     }
-    connect_running_wandb(run_name)
+    wandb_connect_running(run_name)
     wandb.config.update(log_config, allow_val_change=True)
 
     assert os.path.dirname(max_ranking_path) == os.path.dirname(ranking_path)
@@ -261,9 +221,9 @@ def parse_args():
 
     # Run inference on concrete checkpoint
     parser.add_argument('--checkpoint', type=str, help='Path to the checkpoint', default=None)
-    parser.add_argument('--results_dir', type=str, default=None,
+    parser.add_argument('--load_inference_dir', type=str, default=None,
                         help='Path to dir with ranking and evaluation. Inference wont be run if provided')
-    parser.add_argument('--evaluate_all', action='store_true', default=False)
+
     parser.add_argument('--load_eval_stats', action='store_true', default=False)
 
     parser.add_argument(
@@ -280,7 +240,24 @@ def parse_args():
         help='Path to save all best precision-recall curves.'
     )
 
-    return parser.parse_args()
+    parser.add_argument("--datasets_json", default="datasets.json", help="Path to datasets JSON file")
+    parser.add_argument(
+        "--eval_datasets",
+        required=True,
+        nargs="+",
+        help="Dataset name(s) to filter"
+    )
+
+    parsed_args = parser.parse_args()
+    parsed_args.datasets = get_datasets(parsed_args.datasets_json, parsed_args.eval_datasets)
+    return parsed_args
+
+
+def load_run_extraction_results(evaluation_path):
+    pr_data_path = os.path.join(evaluation_path, 'aggregated_pr_data.json')
+    all_pr_data = json.load(open(pr_data_path, 'r'))
+    return all_pr_data
+
 
 
 def evaluate_all_dirs(eval_dirs, save_all_experiments_stats, save_all_best_pr_curves):
@@ -301,11 +278,12 @@ def evaluate_all_dirs(eval_dirs, save_all_experiments_stats, save_all_best_pr_cu
 
         time_before = time.time()
 
-        connect_running_wandb(run_name)
-        all_pr_data = update_extractions_figures(eval_dir, run_name)
-        all_pr_data = add_dev_thresholded_f1s(all_pr_data)
+        wandb_connect_running(run_name)
+        all_pr_data = load_run_extraction_results(eval_dir)
 
         # Thresholding with dev-set best F1 threshold
+        # must be done after dev-set F1 is calculated todo: consider moving this to update_extractions_figures
+        # and ensure that dev-set F1 is calculated
         try:
             best_pr_data_dev_f1 = get_best_pr_data_by_f1(all_pr_data, f1_key='f1_dev_thresholded')
             best_pr_curves_dev_thresholded.extend(best_pr_data_dev_f1)
@@ -316,13 +294,9 @@ def evaluate_all_dirs(eval_dirs, save_all_experiments_stats, save_all_best_pr_cu
         best_pr_data = get_best_pr_data_by_f1(all_pr_data)
         best_pr_curves.extend(best_pr_data)
 
-        all_retrieval_data = update_retrieval_figures(
-            eval_dir,
-            DATASETS['official_dev_small']['qrels_path'],
-            DATASETS['official_dev_small']['collection_path']
-        )
+        all_retrieval_data = get_coll_agg_retrieval_data(eval_dir)
 
-        # Get recall - F1 combinations for each checkpoint, so it can be plotted in the same figure
+        # Get (recall - F1) pairs for each checkpoint, so it can be plotted in the same figure
         combined_stats = combine_retrieval_and_extraction_stats(all_pr_data, all_retrieval_data, run_name)
         combined_stats_all.extend(combined_stats)
 
@@ -365,10 +339,6 @@ def combine_retrieval_and_extraction_stats(all_pr_data, all_retrieval_data, run_
     return combined_stats
 
 
-def get_dev_thresholded_filename(save_all_best_pr_curves):
-    return save_all_best_pr_curves.replace('.jsonl', '_dev_thresholded.jsonl')
-
-
 def save_all_stats(
         save_all_experiments_stats,
         save_all_best_pr_curves,
@@ -386,70 +356,31 @@ def save_all_stats(
         writer.write_all(best_pr_curves_dev_thresholded)
 
 
-def load_all_stats(save_all_experiments_stats, save_all_best_pr_curves):
-    with jsonlines.open(save_all_experiments_stats, 'r') as reader:
-        combined_stats_all = list(reader)
+def inference_checkpoint_all_datasets(
+        checkpoint_path,
+        run_eval,
+        extractions_only_datasets):
 
-    with jsonlines.open(save_all_best_pr_curves, 'r') as reader:
-        best_pr_curves = list(reader)
-
-    with jsonlines.open(get_dev_thresholded_filename(save_all_best_pr_curves), 'r') as reader:
-        best_pr_curves_dev_thresholded = list(reader)
-
-    return best_pr_curves, combined_stats_all, best_pr_curves_dev_thresholded
-
+    datasets = load_datasets('datasets.json')
+    inference_checkpoint(
+        datasets,
+        checkpoint_path,
+        run_eval=run_eval,
+        extractions_only_datasets=extractions_only_datasets)
 
 def main():
     args = parse_args()
 
-    eval_dir = None
+    # Evaluate specific checkpoint
     if args.checkpoint is not None:
-        eval_dir = inference_checkpoint_all_datasets(args.checkpoint)
-    elif args.results_dir is not None:
-        eval_dir = args.results_dir
+        inference_checkpoint(args.datasets, args.checkpoint)
 
-    if eval_dir is None:
-        assert args.evaluate_all
+    if args.evaluate_all_dirs:
         eval_dirs = find_all_results_dirs()
-    else:
-        eval_dirs = [eval_dir]
+        print("Evaluating found directories:\n" + '\n'.join([f'\t{e_dir}' for e_dir in eval_dirs]))
+        evaluate_all_dirs(eval_dirs, args.save_all_experiments_stats, args.save_all_best_pr_curves)
 
-    print("Evaluating found directories:\n" + '\n'.join([f'\t{e_dir}' for e_dir in eval_dirs]))
-    if args.load_eval_stats:
-        print("Evaluation of each directory was skipped. Loading all stats from files instead.")
-        best_pr_curves, combined_stats_all, best_pr_curves_dev_thr = load_all_stats(
-            args.save_all_experiments_stats, args.save_all_best_pr_curves
-        )
-    else:
-        best_pr_curves, combined_stats_all, best_pr_curves_dev_thr = evaluate_all_dirs(
-            eval_dirs, args.save_all_experiments_stats, args.save_all_best_pr_curves
-        )
-
-    connect_running_wandb('eval-all')
-    # Define groups to create figures with subsets of runs
-    always_exclude = ['denormalized-e80-r20', 'add_extraction_ffn', 'add_extraction_ffn-bert']
-    name_filter_groups = {
-        'from bert': lambda name: 'bert' in name,
-        'from pretrained': lambda name: 'bert' not in name,
-        'all': lambda name: True,
-    }
-
-    def filter_group(data, filter_function):
-        data = [s for s in data if filter_function(s['run_name'])]
-        data = [s for s in data if all(excl != s['run_name'] for excl in always_exclude)]
-        return data
-
-    for group_name, group_filter in name_filter_groups.items():
-        print(f"Evaluating group: {group_name}")
-        filtered_stats = filter_group(combined_stats_all, group_filter)
-        filtered_pr_curves = filter_group(best_pr_curves, group_filter)
-        filtered_pr_curves_dev_thr = filter_group(best_pr_curves_dev_thr, group_filter)
-
-        # log_pareto_optimal_solutions(filtered_stats, group_name)
-        log_best_pr_curve_wandb(filtered_pr_curves, group_name)
-        # log_best_pr_curve_wandb(filtered_pr_curves_dev_thr, group_name, 'dev threshold')
-
-    wandb.finish()
+    run_aggregated_eval(args.datasets, args.save_all_experiments_stats)
 
 
 if __name__ == '__main__':

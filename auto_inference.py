@@ -11,7 +11,7 @@ from datetime import timedelta
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers.polling import PollingObserver
 
-from evaluation import downsample_full_fidelity
+from evaluate.extractions import downsample_full_fidelity
 from inference import inference_checkpoint_all_datasets
 
 # Configurable parameters

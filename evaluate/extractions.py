@@ -17,7 +17,7 @@ from sklearn.metrics import precision_recall_curve
 
 from colbert.data.extractions import ExtractionResults
 from colbert.training.training import extraction_stats
-from utility.evaluate.msmarco_passages import evaluate_ms_marco_ranking
+from evaluate.wandb_logging import wandb_log_pr_curve, wandb_log_extraction_accuracy
 
 sns.set_theme()
 
@@ -97,17 +97,8 @@ def _log_extr_accuracy_wandb(target_extractions, all_max_scores, checkpoint_step
     non_nans = {k: np.count_nonzero([~np.isnan(d[k]) for d in data]) for k in data[0].keys()}
     assert [x > (len(target_extractions) * 0.99) for x in non_nans.values()]
 
-    # Get mean of all data
-    data_agg = {f"{k}-{collection_name}": np.nanmean([d[k] for d in data]) for k in data[0].keys()}
-
     # Log the data to wandb
-    collection_cp_steps = f"checkpoint_steps-{collection_name}"
-    wandb.define_metric(collection_cp_steps)
-    for k in data_agg.keys():
-        wandb.define_metric(k, step_metric=collection_cp_steps)
-
-    data_agg[collection_cp_steps] = checkpoint_steps
-    wandb.log(data_agg)
+    wandb_log_extraction_accuracy(data, checkpoint_steps, collection_name)
 
 
 def _evaluate_extractions(all_extractions, all_max_scores, checkpoint_steps, is_first_call):
@@ -137,17 +128,6 @@ def _evaluate_extractions(all_extractions, all_max_scores, checkpoint_steps, is_
     return df_data, best_f1, best_f1_recall, best_f1_threshold
 
 
-def evaluate_retrieval(ranking_path, qrels_path, collection_path, index_name):
-    # Make evaluation of current run
-    out_json = evaluate_ms_marco_ranking(collection_path, qrels_path, ranking_path, silent=True)
-    ranking_path_dir = os.path.dirname(ranking_path)
-    out_json_path = os.path.join(ranking_path_dir, f"{index_name}.retrieval_evaluation.json")
-
-    # Save the evaluation to json
-    with open(out_json_path, "w") as f:
-        json.dump(out_json, f, indent=4)
-
-
 def _cp_palette(df_data):
     df = pd.DataFrame(df_data, columns=["Recall", "Precision", "Threshold", "Type"])
     df_cp = df.copy()[df['Type'].str.contains('Max-Values')]
@@ -170,7 +150,7 @@ def update_extractions_figures(evaluation_path, run_name):
             files_by_coll[collection_name].append((file, int(match.group(2))))
 
     f1_scores = defaultdict(dict)
-    best_pr_curves = defaultdict(list)
+    all_pr_data = defaultdict(list)
     for collection_name, files_to_eval in files_by_coll.items():
         df_data = []
 
@@ -194,7 +174,7 @@ def update_extractions_figures(evaluation_path, run_name):
 
             f1_scores[collection_name][steps] = best_f1
 
-            best_pr_curves[collection_name].append(
+            all_pr_data[collection_name].append(
                 {
                     'best_f1': best_f1,
                     'best_f1_threshold': best_f1_threshold,
@@ -207,13 +187,19 @@ def update_extractions_figures(evaluation_path, run_name):
 
         # Log the PR curve to wandb
         color_mapping, norm, cmap = _cp_palette(df_data)
-        _log_pr_curve_wandb(collection_name, df_data, color_mapping=color_mapping, norm=norm, cmap=cmap)
+        wandb_log_pr_curve(collection_name, df_data, color_mapping=color_mapping, norm=norm, cmap=cmap)
 
     # Log the F1 scores to wandb
     _log_f1_scores_wandb(f1_scores)
 
     # get best results for each collection by f1 value
-    return best_pr_curves
+    all_pr_data = add_dev_thresholded_f1s(all_pr_data)
+
+    # Save all PR data to a file
+    pr_data_path = os.path.join(evaluation_path, 'aggregated_pr_data.json')
+    json.dump(all_pr_data, open(pr_data_path, 'w'))
+
+    return all_pr_data
 
 
 def _log_f1_scores_wandb(f1_scores):
@@ -236,157 +222,6 @@ def _log_f1_scores_wandb(f1_scores):
         table = wandb.Table(columns=["Steps", coll_name],
                             data=data)
         wandb.log({f"f1_scores {coll_name}": table})
-
-
-def _log_pr_curve_wandb(collection_name, data, color_mapping=None, norm=None, cmap=None):
-    run_name = wandb.run.name
-    title = f"PR Curve {collection_name} {run_name}"
-
-    if len(data[0]) == 3:
-        columns = ["Recall", "Precision", "Type"]
-    elif len(data[0]) == 4:
-        len(data[0]) == 3
-        columns = ["Recall", "Precision", "Threshold", "Type"]
-    else:
-        raise ValueError("Data must have 3 or 4 columns")
-
-    df = pd.DataFrame(data, columns=columns)
-    fig, ax = plt.subplots(figsize=(10, 6), dpi=200)
-
-    if color_mapping:
-        # Plot each line individually to allow custom colors (and not to label checkpoint lines)
-        for t in df["Type"].unique():
-            df_sub = df[df["Type"] == t]
-            color = color_mapping[t] if color_mapping and t in color_mapping else None
-            label = None if "Max-Values" in t else t  # Only label 'Random'
-            sns.lineplot(data=df_sub, x="Recall", y="Precision", ax=ax, color=color, label=label)
-    else:
-        # Plot all lines with default colors (hue will do the trick)
-        sns.lineplot(data=df, x="Recall", y="Precision", hue="Type", ax=ax)
-
-    ax.set_title(title)
-    ax.set_ylim(0, 1)
-
-    # Create colorbar as a gradient legend for Max-Values
-    if norm and cmap:
-        sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
-        sm.set_array([])  # Only needed for older matplotlib versions
-        cbar = fig.colorbar(sm, ax=ax)
-
-        # Force showing min and max step values
-        min_step = int(norm.vmin)
-        max_step = int(norm.vmax)
-        cbar.set_ticks(np.linspace(min_step, max_step, num=5, dtype=int))
-        cbar.set_ticklabels([str(int(x)) for x in np.linspace(min_step, max_step, num=5)])
-
-        cbar.set_label("Checkpoint Step")
-
-    # Add manual red marker for Random
-    # ax.plot([], [], color='red', label='Random Baseline')
-
-    # if cmap is not None, we have a colorbar and only one entry in a legend (random baseline)
-    if len(df["Type"].unique()) < 6 or cmap is not None:
-        legend_loc = "lower right"
-        bbox = (1, 0)
-    else:
-        legend_loc = "upper left"
-        bbox = (1, 1)
-
-    ax.legend(loc=legend_loc, bbox_to_anchor=bbox)
-
-    plt.tight_layout()
-    plt.savefig(f"experiments/eval/fig/{title}.pdf", dpi=900)
-    wandb.log({
-        f"pr_curve_all_{collection_name}": wandb.Image(fig)
-    })
-    plt.close(fig)
-
-
-def update_retrieval_figures(evaluation_path, qrels_path, collection_path):
-    # Generate evaluation jsons from ranking.tsv
-    pattern = re.compile(r'col_name=(.+)\.nbits=\d+\.steps=(\d+)\.ranking.tsv')
-
-    for file in os.listdir(evaluation_path):
-        match = pattern.search(file)
-        if match:
-            col_name = match.group(1)
-            # Skip 35 samples dataset - not for retrieval
-            if col_name == '35_samples' or col_name == 'human_explained':
-                continue
-            full_evaluation_path = os.path.join(evaluation_path, file)
-            assert file.endswith('.ranking.tsv')
-            index_name = file[:-len('.ranking.tsv')]
-            evaluate_retrieval(full_evaluation_path, qrels_path, collection_path, index_name)
-
-    # Use all jsons in the directory to generate figures/tables
-    pattern = re.compile(r'col_name=(.+)\.nbits=\d+\.steps=(\d+)\.retrieval_evaluation\.json')
-
-    file_datas = defaultdict(list)
-    for file in os.listdir(evaluation_path):
-        match = pattern.search(file)
-        if match:
-            steps = int(match.group(2))
-            collection_name = match.group(1)
-            with open(os.path.join(evaluation_path, file), "r") as matched_file:
-                data = json.load(matched_file)
-            data['batch_steps'] = steps
-            file_datas[collection_name].append(data)
-
-    for collection_name, data in file_datas.items():
-        # Log the evaluation to wandb
-        data = sorted(data, key=lambda x: x['batch_steps'])
-        values = [file_data.values() for file_data in data]
-        tab = wandb.Table(columns=list(data[0].keys()), data=values)
-        wandb.log({f"retrieval_evaluation_{collection_name}": tab})
-
-        # Craete mrr@10 line plot and upload it to wandb
-        wandb.log({f"mrr@10_steps_{collection_name}": wandb.plot.line(tab, "batch_steps", "mrr@10",
-                                                                      title="MRR@10 over steps")})
-        wandb.log({f"recall@50_steps_{collection_name}": wandb.plot.line(tab, "batch_steps", "recall@50",
-                                                                         title="Recall@50 over steps")})
-
-    return file_datas
-
-
-def log_best_pr_curve_wandb(best_pr_curves_data, group_name):
-    # Save the best PR curves
-    print("\n\n Extraction aggregated f1 results:")
-    all_pr_data = defaultdict(list)
-    all_f1_data = defaultdict(list)
-    all_f1_data_dev_thr = defaultdict(list)
-
-    # Prepare data for logging
-    for best_pr in best_pr_curves_data:
-        name = f"{best_pr['run_name']} {best_pr['checkpoint_steps']}"
-
-        all_f1_data[best_pr['collection_name']].append((best_pr['best_f1'], best_pr['recall_best_f1'], name))
-
-        if best_pr['f1_dev_thresholded'] is not None:
-            all_f1_data_dev_thr[best_pr['collection_name']].append((best_pr['f1_dev_thresholded'], None, name))
-
-        for p, r, _, _ in best_pr['pr_data']:
-            all_pr_data[best_pr['collection_name']].append((p, r, name))
-
-    # Print the best F1 scores
-    for collection, f1_data in all_f1_data.items():
-        print(f"Best F1 score for {collection} thresholded by best:")
-        f1_data = sorted(f1_data, key=lambda x: x[0], reverse=True)
-        for f1, recall_best_f1, name in f1_data:
-            print(f"\t{name}: {f1:.4f} - at recall {recall_best_f1:.4f}")
-        print()
-
-    # Print the best F1 scores dev thresholded
-    for collection, f1_data in all_f1_data_dev_thr.items():
-        print(f"Best F1 score for {collection} thresholded by dev:")
-        f1_data = sorted(f1_data, key=lambda x: x[0], reverse=True)
-        for f1, _, name in f1_data:
-            print(f"\t{name}: {f1:.4f}")
-        print()
-
-    # Log the best PR curves
-    for collection, data in all_pr_data.items():
-        fig_name = f'PR curve {collection} {group_name}'
-        _log_pr_curve_wandb(fig_name, data)
 
 
 def add_dev_thresholded_f1s(all_pr_data):
@@ -454,61 +289,3 @@ def get_best_pr_data_by_f1(all_pr_data, f1_key='best_f1'):
     return [{'collection_name': k, **v} for k, v in best_pr_curves.items()]
 
 
-def mark_pareto_front(data, x_key='best_f1', y_key='recall@10'):
-    """
-    Marks Pareto optimal points in the data.
-    Maximizes x_key and y_key (e.g., best_f1 and recall@10).
-    """
-    pareto = []
-    for i, d in enumerate(data):
-        is_dominated = False
-        for j, other in enumerate(data):
-            if i != j:
-                if other[x_key] >= d[x_key] and other[y_key] >= d[y_key]:
-                    if other[x_key] > d[x_key] or other[y_key] > d[y_key]:
-                        is_dominated = True
-                        break
-        d['is_pareto_optimal'] = not is_dominated
-        pareto.append(d)
-    return pareto
-
-
-def log_pareto_optimal_solutions(combined_stats_all, group_name):
-    combined_stats_all = mark_pareto_front(combined_stats_all)
-    df = pd.DataFrame(combined_stats_all)
-
-    # Normalize steps for opacity (alpha)
-    df['Training progress'] = df.groupby('run_name')['steps'].transform(
-        lambda x: (x - x.min()) / (x.max() - x.min() + 1e-8)
-    )
-
-    # Marker: dot for non-optimal, X for optimal
-    # df['marker'] = df['is_pareto_optimal'].map({True: 'x', False: 'o'})
-
-    # Plot
-    rename_map = {'best_f1': 'best extraction f1', 'is_pareto_optimal': 'Is pareto optimal'}
-    df.rename(columns=rename_map, inplace=True)
-
-    fig, ax = plt.subplots(figsize=(10, 6), dpi=200)
-    sns.scatterplot(
-        data=df,
-        x='best extraction f1',
-        y='recall@10',
-        hue='run_name',
-        size='Training progress',
-        style='Is pareto optimal',
-        # markers={True: 'x', False: 'o'},
-        s=100,  # Size of the markers
-        ax=ax
-    )
-
-    title = f"Pareto Optimal Solutions {group_name}"
-    plt.title(title)
-    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-    plt.tight_layout()
-    plt.savefig(f"test {group_name}.png")
-
-    wandb.log({f'pareto_optimal_solutions_{group_name}': wandb.Image(fig)})
-
-    plt.savefig(f"experiments/eval/fig/{title}.pdf", dpi=900)
-    plt.close(fig)
