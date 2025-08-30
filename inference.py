@@ -65,19 +65,32 @@ def index_dataset(checkpoint, collection_path, root_folder, nbits, index_name):
                   collection=collection_path)
 
 
+def get_max_ranking_name(index_name):
+    return f"{index_name}.extraction_scores.jsonl"
+
+
+def get_ranking_name(index_name):
+    return f"{index_name}.ranking.tsv"
+
+
 def search_dataset(root_folder, queries_path, extraction_path, index_name):
-    config = ColBERTConfig(
-        root=root_folder
-    )
-    searcher = Searcher(index=index_name,
-                        config=config)
+    config = ColBERTConfig(root=root_folder)
+    searcher = Searcher(index=index_name, config=config)
     queries = Queries(queries_path)
 
-    max_ranking = searcher.search_extractions(queries, extraction_path)
+    max_ranking_path = Run().get_results_path(get_max_ranking_name(index_name))
+    if not os.path.exists(max_ranking_path):
+        max_ranking = searcher.search_extractions(queries, extraction_path)
+        max_ranking_path = max_ranking.save(max_ranking_path)
+    else:
+        print(f"Max ranking already exists at {max_ranking_path}, skipping search_extractions step.")
 
-    ranking = searcher.search_all(queries, k=3)
-    max_ranking_path = max_ranking.save(f"{index_name}.extraction_scores.jsonl")
-    ranking_path = ranking.save(f"{index_name}.ranking.tsv")
+    ranking_path = Run().get_results_path(get_ranking_name(index_name))
+    if not os.path.exists(ranking_path):
+        ranking = searcher.search_all(queries, k=3)
+        ranking_path = ranking.save(ranking_path)
+    else:
+        print(f"Ranking already exists at {ranking_path}, skipping search_all step.")
 
     return ranking_path, max_ranking_path
 
@@ -264,7 +277,6 @@ def load_run_extraction_results(evaluation_path):
     pr_data_path = os.path.join(evaluation_path, 'aggregated_pr_data.json')
     all_pr_data = json.load(open(pr_data_path, 'r'))
     return all_pr_data
-
 
 
 def aggregate_results(eval_dirs, save_all_experiments_stats, save_all_best_pr_curves):

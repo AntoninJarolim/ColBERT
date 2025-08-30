@@ -58,7 +58,11 @@ class Run(object):
             yield
         finally:
             self.__pop()
-        
+
+    def get_results_path(self, path):
+        res_path = os.path.join(self.results_root_, path)
+        return os.path.relpath(res_path)
+
     def open(self, path, mode='r', save_dir=None):
         save_dir = 'train' if save_dir is None else save_dir
 
