@@ -29,7 +29,7 @@ def load_all_stats(save_all_experiments_stats, save_all_best_pr_curves):
 
     return best_pr_curves, combined_stats_all, best_pr_curves_dev_thresholded
 
-def run_aggregated_eval(save_all_experiments_stats, save_all_best_pr_curves):
+def aggregate_eval(save_all_experiments_stats, save_all_best_pr_curves):
     """
     Creates aggregated figures for all runs
     """

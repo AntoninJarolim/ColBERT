@@ -13,7 +13,7 @@ from colbert.data import Queries
 from colbert.infra import Run, RunConfig, ColBERTConfig
 from colbert import Searcher
 
-from evaluate.aggregated_runs import run_aggregated_eval, get_dev_thresholded_filename
+from evaluate.aggregated_runs import aggregate_eval, get_dev_thresholded_filename
 from evaluate.extractions import update_extractions_figures, add_dev_thresholded_f1s, get_best_pr_data_by_f1, \
     downsample_full_fidelity
 from evaluate.retrieval import update_retrieval_figures, get_coll_agg_retrieval_data
@@ -248,6 +248,13 @@ def parse_args():
         help="Dataset name(s) to filter. Filtering will not be applied if not provided."
     )
 
+    parser.add_argument(
+        '--aggregate_results',
+        action='store_true',
+        default=True,
+        help='Whether to aggregate results from all found evaluation directories.'
+    )
+
     parsed_args = parser.parse_args()
     parsed_args.datasets = get_datasets(parsed_args.datasets_json, parsed_args.eval_datasets)
     return parsed_args
@@ -260,7 +267,7 @@ def load_run_extraction_results(evaluation_path):
 
 
 
-def evaluate_all_dirs(eval_dirs, save_all_experiments_stats, save_all_best_pr_curves):
+def aggregate_results(eval_dirs, save_all_experiments_stats, save_all_best_pr_curves):
     # Find the best checkpoint for each run
     # and save data needed to plot precision-recall curves
     best_pr_curves = []
@@ -367,11 +374,11 @@ def main():
             args.checkpoint
         )
 
-    if args.evaluate_all_dirs:
+    if args.aggregate_results:
         eval_dirs = find_all_results_dirs()
         print("Evaluating found directories:\n" + '\n'.join([f'\t{e_dir}' for e_dir in eval_dirs]))
-        evaluate_all_dirs(eval_dirs, args.save_all_experiments_stats, args.save_all_best_pr_curves)
-        run_aggregated_eval(args.datasets_json, args.save_all_experiments_stats)
+        aggregate_results(eval_dirs, args.save_all_experiments_stats, args.save_all_best_pr_curves)
+        aggregate_eval(args.datasets_json, args.save_all_experiments_stats)
 
 
 if __name__ == '__main__':
