@@ -119,21 +119,19 @@ def _extraction_baseline_random(targets):
     return df_random_data
 
 
-def _micro_f1(all_extractions, all_max_scores, checkpoint_steps):
+def _micro_f1(all_extractions, all_max_scores):
     # Compute precision-recall curve for real max scores (requires flat data)
     all_extractions_flat = np.array([x for sublist in all_extractions for x in sublist])
     all_max_scores_flat = np.array([x for sublist in all_max_scores for x in sublist])
 
     data_max, best_f1, best_f1_recall, best_f1_threshold = _get_pr_data(all_extractions_flat, all_max_scores_flat)
 
-    type_name = f"Max-Values Checkpoint {checkpoint_steps}"
-
-    pr_data = [
-        (recall, precision, thr, type_name)
-        for recall, precision, thr in data_max
-    ]
-
-    return pr_data, best_f1, best_f1_recall, best_f1_threshold
+    return {
+        'best_f1': best_f1,
+        'best_f1_threshold': best_f1_threshold,
+        'recall_best_f1': best_f1_recall,
+        'pr_data': data_max
+    }
 
 
 def _cp_palette(df_data):
@@ -259,22 +257,44 @@ def _f1_batched(threshold, t, predictions: np.array):
     return precision, recall, f1
 
 
-def _macro_f1(t, targets, predictions):
+def _macro_f1(thresholds, targets, predictions, collection_name):
     assert targets.shape == predictions.shape, \
         f"Targets shape {targets.shape} and predictions shape {predictions.shape} must be the same."
 
     # precisions_b, recalls_b, f1s_b = _f1_batched(t, targets, predictions)
-    macro_precision_nu, macro_recall_nu, macro_f1_nu = f1_batched_numba(t, targets, predictions)
+    pr_data = []
 
-    # macro_precision = np.mean(precisions_b)
-    # macro_recall = np.mean(recalls_b)
-    # macro_f1 = np.mean(f1s_b)
+    for t in tqdm(thresholds, desc=f"Computing macro F1 for collection-{collection_name}", total=len(thresholds)):
+        macro_precision, macro_recall, macro_f1 = f1_batched_numba(t, targets, predictions)
+        pr_data.append({
+            "Threshold": t,
+            "Precision": macro_precision,
+            "Recall": macro_recall,
+            "F1": macro_f1,
+        })
 
-    # assert np.isclose(macro_precision, macro_precision_nu), f"{macro_precision} vs {macro_precision_nu}"
-    # assert np.isclose(macro_recall, macro_recall_nu), f"{macro_recall} vs {macro_recall_nu}"
-    # assert np.isclose(macro_f1, macro_f1_nu), f"{macro_f1} vs {macro_f1_nu}"
+    max_by_f1 = sorted(pr_data, key=lambda x: x['macro-F1'], reverse=True)[0]
 
-    return macro_recall_nu, macro_precision_nu, macro_f1_nu
+    best_f1 = max_by_f1['macro-F1']
+    recall_best_f1 = max_by_f1['macro-Recall']
+    best_f1_threshold = max_by_f1['Threshold']
+
+    # match sklearn format
+    pr_data = [(d['Recall'], d['Precision'], d['Threshold']) for d in pr_data]
+
+    return {
+        'best_f1': best_f1,
+        'best_f1_threshold': best_f1_threshold,
+        'recall_best_f1': recall_best_f1,
+        'pr_data': pr_data
+    }
+
+def _explode_by_type(pr_curves_by_cp):
+    df_data = []
+    for cp, pr_data in pr_curves_by_cp.items():
+        for recall, precision, thr in pr_data:
+            df_data.append((recall, precision, thr, f"Max-Values {cp}" if cp != "Random" else "Random"))
+    return df_data
 
 
 def update_extractions_figures(evaluation_dir, run_name):
@@ -298,7 +318,6 @@ def update_extractions_figures(evaluation_dir, run_name):
         targets = [t for i, t in enumerate(targets) if i not in no_positive_labels]
         targets_b = pad_and_stack(targets, pad_value=0)
 
-        pr_curves_by_cp = []
         for i, file_data in enumerate(files_to_eval):
             extraction_results = file_data['extraction_results']
             steps = file_data['steps']
@@ -310,43 +329,30 @@ def update_extractions_figures(evaluation_dir, run_name):
             predictions_b = pad_and_stack(predictions, pad_value=0)
             thrs = _mid_thresholds(predictions)
 
-            data = []
-            for t in tqdm(thrs, desc=f"Computing macro F1 for collection-{collection_name}", total=len(thrs)):
-                macro_recall, macro_precision, macro_f1 = _macro_f1(t, targets_b, predictions_b)
-                data.append({
-                    "Threshold": t,
-                    "macro-Precision": macro_precision,
-                    "macro-Recall": macro_recall,
-                    "macro-F1": macro_f1,
-                })
-
-            max_by_f1 = sorted(data, key=lambda x: x['macro-F1'], reverse=True)[0]
-
-            pr_data, best_f1, recall_best_f1, best_f1_threshold = _micro_f1(
-                targets, predictions, steps
-            )
-            pr_curves_by_cp.extend(pr_data)
-
-            # Compute accuracy etc. for each datapoint
+            # Compute results
+            macro_results = _macro_f1(thrs, targets_b, predictions_b, collection_name)
+            micro_results = _micro_f1(targets, predictions)
             _log_extr_accuracy_wandb(targets, predictions, steps, collection_name)
 
+            # Store results
             all_pr_data[collection_name].append(
                 {
-                    'best_f1': best_f1,
-                    'best_f1_threshold': best_f1_threshold,
-                    'pr_data': pr_data,
-                    'checkpoint_steps': steps,
+                    'data-name': f"Max-Values Checkpoint {steps}",
                     'run_name': run_name,
-                    'recall_best_f1': recall_best_f1,
+                    'checkpoint_steps': steps,
+                    'micro_results': micro_results,
+                    'macro_results': macro_results
                 }
             )
 
         # add random scores baseline
-        pr_curves_by_cp.extend(_extraction_baseline_random(targets))
+        pr_curves_by_cp = {entry['checkpoint_steps']: entry['micro_results']['pr_data'] for entry in all_pr_data[collection_name]}
+        pr_curves_by_cp["Random"] = _extraction_baseline_random(targets)
 
         # Log the PR curve to wandb
-        color_mapping, norm, cmap = _cp_palette(pr_curves_by_cp)
-        wandb_log_pr_curve(collection_name, pr_curves_by_cp, color_mapping=color_mapping, norm=norm, cmap=cmap)
+        df_data = _explode_by_type(pr_curves_by_cp)
+        color_mapping, norm, cmap = _cp_palette(df_data)
+        wandb_log_pr_curve(collection_name, df_data, color_mapping=color_mapping, norm=norm, cmap=cmap)
 
     # Log the F1 scores to wandb
     f1_scores = _agg_f1_by_collection(all_pr_data)
