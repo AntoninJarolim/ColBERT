@@ -128,12 +128,12 @@ def _micro_f1(all_extractions, all_max_scores, checkpoint_steps):
 
     type_name = f"Max-Values Checkpoint {checkpoint_steps}"
 
-    df_data = [
+    pr_data = [
         (recall, precision, thr, type_name)
         for recall, precision, thr in data_max
     ]
 
-    return df_data, best_f1, best_f1_recall, best_f1_threshold
+    return pr_data, best_f1, best_f1_recall, best_f1_threshold
 
 
 def _cp_palette(df_data):
@@ -280,20 +280,7 @@ def _macro_f1(t, targets, predictions):
 def update_extractions_figures(evaluation_dir, run_name):
     pattern = re.compile(r'col_name=(.+)\.nbits=\d+\.steps=(\d+)\.extraction_scores\.jsonl$')
 
-    files_by_coll = defaultdict(list)
-    for file in os.listdir(evaluation_dir):
-        match = pattern.search(file)
-        if match:
-            max_ranking_path = os.path.join(evaluation_dir, file)
-            extraction_results = ExtractionResults.cast(max_ranking_path)
-
-            collection_name = match.group(1)
-            files_by_coll[collection_name].append(
-                {
-                    'extraction_results': extraction_results,
-                    'steps': int(match.group(2)),
-                }
-            )
+    files_by_coll = _agg_files_by_collection(evaluation_dir, pattern)
 
     all_pr_data = defaultdict(list)
     for collection_name, files_to_eval in files_by_coll.items():
@@ -312,8 +299,6 @@ def update_extractions_figures(evaluation_dir, run_name):
         targets_b = pad_and_stack(targets, pad_value=0)
 
         pr_curves_by_cp = []
-        # Sort files by steps
-        files_to_eval = sorted(files_to_eval, key=lambda x: x['steps'])
         for i, file_data in enumerate(files_to_eval):
             extraction_results = file_data['extraction_results']
             steps = file_data['steps']
@@ -375,6 +360,28 @@ def update_extractions_figures(evaluation_dir, run_name):
     json.dump(all_pr_data, open(pr_data_path, 'w'))
 
     return all_pr_data
+
+
+def _agg_files_by_collection(evaluation_dir, pattern):
+    files_by_coll = defaultdict(list)
+    for file in os.listdir(evaluation_dir):
+        match = pattern.search(file)
+        if match:
+            max_ranking_path = os.path.join(evaluation_dir, file)
+            extraction_results = ExtractionResults.cast(max_ranking_path)
+
+            collection_name = match.group(1)
+            files_by_coll[collection_name].append(
+                {
+                    'extraction_results': extraction_results,
+                    'steps': int(match.group(2)),
+                }
+            )
+    files_by_coll = {
+        k: sorted(v, key=lambda x: x['steps'])
+        for k, v in files_by_coll.items()
+    }
+    return files_by_coll
 
 
 def _agg_f1_by_collection(all_pr_data):
