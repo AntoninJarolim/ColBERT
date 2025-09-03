@@ -103,29 +103,35 @@ def _log_extr_accuracy_wandb(target_extractions, all_max_scores, checkpoint_step
     wandb_log_extraction_accuracy(data, checkpoint_steps, collection_name)
 
 
-def _evaluate_extractions(all_extractions, all_max_scores, checkpoint_steps, is_first_call):
+def _extraction_baseline_random(targets):
+    # Flatten targets if necessary
+    if not isinstance(targets, np.ndarray):
+        targets = np.array([x for sublist in targets for x in sublist])
+
+    # Compute precision-recall curve for baselines (random and select all)
+    random_scores = np.random.random_sample(len(targets))
+    data_rnd, _, _, _ = _get_pr_data(targets, random_scores)
+
+    df_random_data = []
+    for recall, precision, thr in data_rnd:
+        df_random_data.append((recall, precision, thr, "Random"))
+
+    return df_random_data
+
+
+def _micro_f1(all_extractions, all_max_scores, checkpoint_steps):
     # Compute precision-recall curve for real max scores (requires flat data)
     all_extractions_flat = np.array([x for sublist in all_extractions for x in sublist])
     all_max_scores_flat = np.array([x for sublist in all_max_scores for x in sublist])
 
     data_max, best_f1, best_f1_recall, best_f1_threshold = _get_pr_data(all_extractions_flat, all_max_scores_flat)
 
-    data_rnd = []
-    if is_first_call:
-        # Compute precision-recall curve for baselines (random and select all)
-        random_scores = np.random.random_sample(len(all_max_scores_flat))
-        data_rnd, _, _, _ = _get_pr_data(all_extractions_flat, random_scores)
+    type_name = f"Max-Values Checkpoint {checkpoint_steps}"
 
-    # Iterate over data types and store recall/precision values
-    df_data = []
-    data_type_pairs = [
-        (data_rnd, "Random"),
-        (data_max, f"Max-Values Checkpoint {checkpoint_steps}"),
+    df_data = [
+        (recall, precision, thr, type_name)
+        for recall, precision, thr in data_max
     ]
-
-    for data, type_name in data_type_pairs:
-        for recall, precision, threshold in data:
-            df_data.append((recall, precision, threshold, type_name))
 
     return df_data, best_f1, best_f1_recall, best_f1_threshold
 
@@ -146,6 +152,12 @@ def _mid_thresholds(values, return_last=False):
     Given a list/array of numeric values, return thresholds
     that lie between each pair of adjacent sorted unique values.
     """
+
+    # Flatten the list of lists if necessary
+    if not isinstance(values, np.ndarray):
+        values = (score for sublist in values for score in sublist)
+        values = np.fromiter(values, dtype=float)
+
     values = np.unique(values)  # sorted + deduplicated
     thresholds = (values[:-1] + values[1:]) / 2
     thresholds = thresholds if return_last else thresholds[:-1]
@@ -215,6 +227,7 @@ def f1_batched_numba(threshold, t, predictions):
 
     return macro_precision, macro_recall, macro_f1
 
+
 def _f1_batched(threshold, t, predictions: np.array):
     """
     Compute precision, recall, F1 for a given threshold.
@@ -244,6 +257,7 @@ def _f1_batched(threshold, t, predictions: np.array):
     f1 = 2 * (precision * recall) / (precision + recall + 1e-10)
 
     return precision, recall, f1
+
 
 def _macro_f1(t, targets, predictions):
     assert targets.shape == predictions.shape, \
@@ -281,34 +295,38 @@ def update_extractions_figures(evaluation_dir, run_name):
                 }
             )
 
-    f1_scores = defaultdict(dict)
     all_pr_data = defaultdict(list)
     for collection_name, files_to_eval in files_by_coll.items():
-        df_data = []
 
+        # Add random baseline - first get targets - it is the same for all checkpoints, so just use the first
+        targets = [
+            np.array(line['extraction_binary'], dtype=bool)
+            for line in files_to_eval[0]['extraction_results']
+        ]
+
+        # Find targets with no positive labels
+        no_positive_labels = find_no_positive_labels(collection_name, targets)
+
+        # Remove targets with no positive labels
+        targets = [t for i, t in enumerate(targets) if i not in no_positive_labels]
+        targets_b = pad_and_stack(targets, pad_value=0)
+
+        pr_curves_by_cp = []
         # Sort files by steps
         files_to_eval = sorted(files_to_eval, key=lambda x: x['steps'])
         for i, file_data in enumerate(files_to_eval):
             extraction_results = file_data['extraction_results']
             steps = file_data['steps']
 
-            targets = [np.array(line['extraction_binary'], dtype=bool) for line in extraction_results]
-            predictions = [np.array(line['max_scores']) for line in extraction_results]
-
-            # Find targets with no positive labels and remove them
-            predictions, targets = remove_zerosum_targets(collection_name, targets, predictions)
-
-            # Flatten list of lists
-            predictions_all = (score for line in extraction_results for score in line['max_scores'])
-            thrs = _mid_thresholds(np.fromiter(predictions_all, dtype=float))
-
-            # Pad targets and predictions with 0 to the same length for batched computation
-            targets_b = pad_and_stack(targets, pad_value=0)
+            # Get predictions and remove those with no positive labels
+            predictions = [np.array(line['max_scores'])
+                           for i, line in enumerate(extraction_results)
+                           if i not in no_positive_labels]
             predictions_b = pad_and_stack(predictions, pad_value=0)
+            thrs = _mid_thresholds(predictions)
 
             data = []
-
-            for t in tqdm(thrs, desc=f"Computing macro F1", total=len(thrs)):
+            for t in tqdm(thrs, desc=f"Computing macro F1 for collection-{collection_name}", total=len(thrs)):
                 macro_recall, macro_precision, macro_f1 = _macro_f1(t, targets_b, predictions_b)
                 data.append({
                     "Threshold": t,
@@ -319,15 +337,13 @@ def update_extractions_figures(evaluation_dir, run_name):
 
             max_by_f1 = sorted(data, key=lambda x: x['macro-F1'], reverse=True)[0]
 
-            pr_data, best_f1, recall_best_f1, best_f1_threshold = _evaluate_extractions(
-                targets, predictions, steps, i == 0
+            pr_data, best_f1, recall_best_f1, best_f1_threshold = _micro_f1(
+                targets, predictions, steps
             )
-            df_data.extend(pr_data)
+            pr_curves_by_cp.extend(pr_data)
 
             # Compute accuracy etc. for each datapoint
             _log_extr_accuracy_wandb(targets, predictions, steps, collection_name)
-
-            f1_scores[collection_name][steps] = best_f1
 
             all_pr_data[collection_name].append(
                 {
@@ -340,11 +356,15 @@ def update_extractions_figures(evaluation_dir, run_name):
                 }
             )
 
+        # add random scores baseline
+        pr_curves_by_cp.extend(_extraction_baseline_random(targets))
+
         # Log the PR curve to wandb
-        color_mapping, norm, cmap = _cp_palette(df_data)
-        wandb_log_pr_curve(collection_name, df_data, color_mapping=color_mapping, norm=norm, cmap=cmap)
+        color_mapping, norm, cmap = _cp_palette(pr_curves_by_cp)
+        wandb_log_pr_curve(collection_name, pr_curves_by_cp, color_mapping=color_mapping, norm=norm, cmap=cmap)
 
     # Log the F1 scores to wandb
+    f1_scores = _agg_f1_by_collection(all_pr_data)
     _log_f1_scores_wandb(f1_scores)
 
     # get best results for each collection by f1 value
@@ -357,17 +377,24 @@ def update_extractions_figures(evaluation_dir, run_name):
     return all_pr_data
 
 
-def remove_zerosum_targets(collection_name, targets, predictions):
+def _agg_f1_by_collection(all_pr_data):
+    return {
+        collection_name: {
+            entry['checkpoint_steps']: entry['best_f1']
+            for entry in entries
+        }
+        for collection_name, entries in all_pr_data.items()
+    }
+
+
+def find_no_positive_labels(collection_name, targets):
     no_positive_labels = [i for i, t in enumerate(targets) if np.sum(t.astype(int)) == 0]
     if no_positive_labels:
         print(
             f"Warning: {len(no_positive_labels)} samples in collection '{collection_name}' have no positive labels. "
             f"They will be ignored in macro F1 computation.")
 
-        # Remove these samples from targets and predictions
-        targets = [t for i, t in enumerate(targets) if i not in no_positive_labels]
-        predictions = [p for i, p in enumerate(predictions) if i not in no_positive_labels]
-    return predictions, targets
+    return no_positive_labels
 
 
 def _log_f1_scores_wandb(f1_scores):
