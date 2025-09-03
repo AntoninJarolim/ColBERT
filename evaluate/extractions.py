@@ -7,13 +7,15 @@ import torch
 from matplotlib import pyplot as plt
 import matplotlib.colors as mcolors
 from torch import nn
+from numba import njit
 
 import wandb
 import numpy as np
 import pandas as pd
 import seaborn as sns
 
-from sklearn.metrics import precision_recall_curve
+from sklearn.metrics import precision_recall_curve, precision_score, recall_score
+from tqdm import tqdm
 
 from colbert.data.extractions import ExtractionResults
 from colbert.training.training import extraction_stats
@@ -139,15 +141,145 @@ def _cp_palette(df_data):
     return color_mapping, norm, cmap
 
 
-def update_extractions_figures(evaluation_path, run_name):
+def _mid_thresholds(values, return_last=False):
+    """
+    Given a list/array of numeric values, return thresholds
+    that lie between each pair of adjacent sorted unique values.
+    """
+    values = np.unique(values)  # sorted + deduplicated
+    thresholds = (values[:-1] + values[1:]) / 2
+    thresholds = thresholds if return_last else thresholds[:-1]
+    return thresholds
+
+
+def pad_and_stack(sequences, pad_value=0):
+    """
+    Pad sequences to the same length and stack them into a 2D array.
+    """
+    max_len = max(len(seq) for seq in sequences)
+    return np.vstack([
+        np.pad(np.asarray(seq), (0, max_len - len(seq)), constant_values=pad_value)
+        for seq in sequences
+    ])
+
+
+def _f1(threshold: float, t, predictions: np.array):
+    """
+    Compute precision, recall, F1 for a given threshold.
+    """
+    # Convert scores to binary predictions using threshold
+    p = (predictions >= threshold)
+
+    TP = (t & p).sum()
+    FP = (~t & p).sum()
+    FN = (t & ~p).sum()
+    precision = TP / (TP + FP)
+    recall = TP / (TP + FN)
+    f1 = 2 * (precision * recall) / (precision + recall + 1e-10)
+
+    return precision, recall, f1
+
+
+@njit
+def f1_batched_numba(threshold, t, predictions):
+    B, L = t.shape
+    f1_sum = 0.0
+    prec_sum = 0.0
+    rec_sum = 0.0
+
+    for i in range(B):
+        TP = 0
+        FP = 0
+        FN = 0
+        for j in range(L):
+            pred = predictions[i, j] >= threshold
+            true = t[i, j]
+            if pred and true:
+                TP += 1
+            elif pred and not true:
+                FP += 1
+            elif not pred and true:
+                FN += 1
+
+        precision = TP / (TP + FP) if TP + FP > 0 else 0.0
+        recall = TP / (TP + FN) if TP + FN > 0 else 0.0
+        f1 = 2 * precision * recall / (precision + recall + 1e-10)
+
+        f1_sum += f1
+        prec_sum += precision
+        rec_sum += recall
+
+    macro_precision = prec_sum / B
+    macro_recall = rec_sum / B
+    macro_f1 = f1_sum / B
+
+    return macro_precision, macro_recall, macro_f1
+
+def _f1_batched(threshold, t, predictions: np.array):
+    """
+    Compute precision, recall, F1 for a given threshold.
+    t and predictions are 2D arrays (batch_size, seq_len).
+    """
+    # Convert scores to binary predictions using threshold
+    p = (predictions >= threshold)
+
+    # Compute TP, FP, FN per example (sum over last axis)
+    TP = (t & p).sum(-1)
+    FP = (~t & p).sum(-1)
+    FN = (t & ~p).sum(-1)
+
+    # Initialize precision and recall arrays with zeros
+    precision = np.zeros_like(TP, dtype=float)
+    recall = np.zeros_like(TP, dtype=float)
+
+    # Mask for division without warning if denominator is 0
+    # zeroes_like -> default values are 0
+    mask_prec = TP + FP > 0
+    mask_rec = TP + FN > 0
+
+    # Compute only where denominator > 0
+    precision[mask_prec] = TP[mask_prec] / (TP[mask_prec] + FP[mask_prec])
+    recall[mask_rec] = TP[mask_rec] / (TP[mask_rec] + FN[mask_rec])
+
+    f1 = 2 * (precision * recall) / (precision + recall + 1e-10)
+
+    return precision, recall, f1
+
+def _macro_f1(t, targets, predictions):
+    assert targets.shape == predictions.shape, \
+        f"Targets shape {targets.shape} and predictions shape {predictions.shape} must be the same."
+
+    # precisions_b, recalls_b, f1s_b = _f1_batched(t, targets, predictions)
+    macro_precision_nu, macro_recall_nu, macro_f1_nu = f1_batched_numba(t, targets, predictions)
+
+    # macro_precision = np.mean(precisions_b)
+    # macro_recall = np.mean(recalls_b)
+    # macro_f1 = np.mean(f1s_b)
+
+    # assert np.isclose(macro_precision, macro_precision_nu), f"{macro_precision} vs {macro_precision_nu}"
+    # assert np.isclose(macro_recall, macro_recall_nu), f"{macro_recall} vs {macro_recall_nu}"
+    # assert np.isclose(macro_f1, macro_f1_nu), f"{macro_f1} vs {macro_f1_nu}"
+
+    return macro_recall_nu, macro_precision_nu, macro_f1_nu
+
+
+def update_extractions_figures(evaluation_dir, run_name):
     pattern = re.compile(r'col_name=(.+)\.nbits=\d+\.steps=(\d+)\.extraction_scores\.jsonl$')
 
     files_by_coll = defaultdict(list)
-    for file in os.listdir(evaluation_path):
+    for file in os.listdir(evaluation_dir):
         match = pattern.search(file)
         if match:
+            max_ranking_path = os.path.join(evaluation_dir, file)
+            extraction_results = ExtractionResults.cast(max_ranking_path)
+
             collection_name = match.group(1)
-            files_by_coll[collection_name].append((file, int(match.group(2))))
+            files_by_coll[collection_name].append(
+                {
+                    'extraction_results': extraction_results,
+                    'steps': int(match.group(2)),
+                }
+            )
 
     f1_scores = defaultdict(dict)
     all_pr_data = defaultdict(list)
@@ -155,22 +287,45 @@ def update_extractions_figures(evaluation_path, run_name):
         df_data = []
 
         # Sort files by steps
-        files_to_eval = sorted(files_to_eval, key=lambda x: int(x[1]))
-        for i, (file, steps) in enumerate(files_to_eval):
-            # Evaluation
-            max_ranking_path = os.path.join(evaluation_path, file)
-            max_ranking_results = ExtractionResults.cast(max_ranking_path)
+        files_to_eval = sorted(files_to_eval, key=lambda x: x['steps'])
+        for i, file_data in enumerate(files_to_eval):
+            extraction_results = file_data['extraction_results']
+            steps = file_data['steps']
 
-            all_extractions = [[score for score in line['extraction_binary']] for line in max_ranking_results]
-            all_max_scores = [[score for score in line['max_scores']] for line in max_ranking_results]
+            targets = [np.array(line['extraction_binary'], dtype=bool) for line in extraction_results]
+            predictions = [np.array(line['max_scores']) for line in extraction_results]
+
+            # Find targets with no positive labels and remove them
+            predictions, targets = remove_zerosum_targets(collection_name, targets, predictions)
+
+            # Flatten list of lists
+            predictions_all = (score for line in extraction_results for score in line['max_scores'])
+            thrs = _mid_thresholds(np.fromiter(predictions_all, dtype=float))
+
+            # Pad targets and predictions with 0 to the same length for batched computation
+            targets_b = pad_and_stack(targets, pad_value=0)
+            predictions_b = pad_and_stack(predictions, pad_value=0)
+
+            data = []
+
+            for t in tqdm(thrs, desc=f"Computing macro F1", total=len(thrs)):
+                macro_recall, macro_precision, macro_f1 = _macro_f1(t, targets_b, predictions_b)
+                data.append({
+                    "Threshold": t,
+                    "macro-Precision": macro_precision,
+                    "macro-Recall": macro_recall,
+                    "macro-F1": macro_f1,
+                })
+
+            max_by_f1 = sorted(data, key=lambda x: x['macro-F1'], reverse=True)[0]
 
             pr_data, best_f1, recall_best_f1, best_f1_threshold = _evaluate_extractions(
-                all_extractions, all_max_scores, steps, i == 0
+                targets, predictions, steps, i == 0
             )
             df_data.extend(pr_data)
 
             # Compute accuracy etc. for each datapoint
-            _log_extr_accuracy_wandb(all_extractions, all_max_scores, steps, collection_name)
+            _log_extr_accuracy_wandb(targets, predictions, steps, collection_name)
 
             f1_scores[collection_name][steps] = best_f1
 
@@ -196,10 +351,23 @@ def update_extractions_figures(evaluation_path, run_name):
     all_pr_data = add_dev_thresholded_f1s(all_pr_data)
 
     # Save all PR data to a file
-    pr_data_path = os.path.join(evaluation_path, 'aggregated_pr_data.json')
+    pr_data_path = os.path.join(evaluation_dir, 'aggregated_pr_data.json')
     json.dump(all_pr_data, open(pr_data_path, 'w'))
 
     return all_pr_data
+
+
+def remove_zerosum_targets(collection_name, targets, predictions):
+    no_positive_labels = [i for i, t in enumerate(targets) if np.sum(t.astype(int)) == 0]
+    if no_positive_labels:
+        print(
+            f"Warning: {len(no_positive_labels)} samples in collection '{collection_name}' have no positive labels. "
+            f"They will be ignored in macro F1 computation.")
+
+        # Remove these samples from targets and predictions
+        targets = [t for i, t in enumerate(targets) if i not in no_positive_labels]
+        predictions = [p for i, p in enumerate(predictions) if i not in no_positive_labels]
+    return predictions, targets
 
 
 def _log_f1_scores_wandb(f1_scores):
@@ -278,7 +446,6 @@ def add_dev_thresholded_f1s(all_pr_data):
 
 
 def get_best_pr_data_by_f1(all_pr_data, f1_key='best_f1'):
-
     # Remove f1_key that equals None (so sorting works)
     all_pr_data = {k: [v for v in v if v[f1_key] is not None] for k, v in all_pr_data.items()}
 
@@ -287,5 +454,3 @@ def get_best_pr_data_by_f1(all_pr_data, f1_key='best_f1'):
 
     # reshape 'collection: [{data}, {data}]' to 'collection: {data}', as we only have one best
     return [{'collection_name': k, **v} for k, v in best_pr_curves.items()]
-
-
