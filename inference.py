@@ -51,7 +51,7 @@ def remove_prefix(text, prefix):
     return text
 
 
-def index_dataset(checkpoint, collection_path, root_folder, nbits, index_name):
+def index_dataset(checkpoint, collection_path, root_folder, nbits, index_name, overwrite=False):
     checkpoint = os.path.realpath(checkpoint)
     config = ColBERTConfig(
         nbits=nbits,
@@ -61,7 +61,7 @@ def index_dataset(checkpoint, collection_path, root_folder, nbits, index_name):
         checkpoint=checkpoint,
         config=config)
     indexer.index(name=index_name,
-                  overwrite=True,  # 'reuse'
+                  overwrite='reuse' if not overwrite else True,
                   collection=collection_path)
 
 
@@ -73,24 +73,26 @@ def get_ranking_name(index_name):
     return f"{index_name}.ranking.tsv"
 
 
-def search_dataset(root_folder, queries_path, extraction_path, index_name):
+def search_dataset(root_folder, queries_path, extraction_path, index_name, overwrite=False):
+    max_ranking_path = Run().get_results_path(get_max_ranking_name(index_name))
+    ranking_path = Run().get_results_path(get_ranking_name(index_name))
+
+    run_inference = not os.path.exists(max_ranking_path) or not os.path.exists(ranking_path)
+
+    if not run_inference and not overwrite:
+        print(
+            f"Both max ranking and ranking already exist at {max_ranking_path} and {ranking_path}, skipping search step.")
+        return ranking_path, max_ranking_path
+
     config = ColBERTConfig(root=root_folder)
     searcher = Searcher(index=index_name, config=config)
     queries = Queries(queries_path)
 
-    max_ranking_path = Run().get_results_path(get_max_ranking_name(index_name))
-    if not os.path.exists(max_ranking_path):
-        max_ranking = searcher.search_extractions(queries, extraction_path)
-        max_ranking_path = max_ranking.save(max_ranking_path)
-    else:
-        print(f"Max ranking already exists at {max_ranking_path}, skipping search_extractions step.")
+    max_ranking = searcher.search_extractions(queries, extraction_path)
+    max_ranking_path = max_ranking.save(max_ranking_path)
 
-    ranking_path = Run().get_results_path(get_ranking_name(index_name))
-    if not os.path.exists(ranking_path):
-        ranking = searcher.search_all(queries, k=3)
-        ranking_path = ranking.save(ranking_path)
-    else:
-        print(f"Ranking already exists at {ranking_path}, skipping search_all step.")
+    ranking = searcher.search_all(queries, k=3)
+    ranking_path = ranking.save(ranking_path)
 
     return ranking_path, max_ranking_path
 
@@ -120,7 +122,7 @@ def get_checkpoint_steps(checkpoint):
 
 
 def inference_checkpoint_all_datasets(
-        datasets, checkpoint, run_eval=True, extractions_only_datasets=False):
+        datasets, checkpoint, overwrite_inference=False, run_eval=True, extractions_only_datasets=False):
     eval_datasets = []
 
     if extractions_only_datasets:
@@ -137,6 +139,7 @@ def inference_checkpoint_all_datasets(
             data['queries_path'],
             data['extraction_path'],
             data['qrels_path'],
+            overwrite_inference,
             run_eval=run_eval and idx_dataset == len(datasets) - 1
         )
         eval_datasets.append(eval_dataset)
@@ -154,6 +157,7 @@ def inference_checkpoint_one_dataset(
         queries_path,
         extraction_path,
         qrels_path,
+        overwrite_inference,
         run_eval=True
 ):
     # inference
@@ -195,13 +199,15 @@ def inference_checkpoint_one_dataset(
             config_search['collection_path'],
             config_search['root_folder'],
             config_search['nbits'],
-            config_search['index_name']
+            config_search['index_name'],
+            overwrite=overwrite_inference
         )
         ranking_path, max_ranking_path = search_dataset(
             config_search['root_folder'],
             config_search['queries_path'],
             config_search['extraction_path'],
-            config_search['index_name']
+            config_search['index_name'],
+            overwrite=overwrite_inference
         )
 
     assert ranking_path is not None, "Inference failed"
@@ -239,6 +245,12 @@ def parse_args():
 
     # Run inference on concrete checkpoint
     parser.add_argument('--checkpoint', type=str, help='Path to the checkpoint', default=None)
+    parser.add_argument(
+        '--overwrite_inference',
+        action='store_true',
+        default=False,
+        help='Whether to overwrite existing inference results.'
+    )
 
     parser.add_argument(
         '--save_all_experiments_stats',
@@ -383,7 +395,8 @@ def main():
         datasets = load_datasets(args.datasets_json)
         inference_checkpoint_all_datasets(
             datasets,
-            args.checkpoint
+            args.checkpoint,
+            overwrite_inference=args.overwrite_inference,
         )
 
     if args.aggregate_results:
