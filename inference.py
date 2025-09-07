@@ -122,17 +122,19 @@ def get_checkpoint_steps(checkpoint):
 
 
 def inference_checkpoint_all_datasets(
-        datasets, checkpoint, overwrite_inference=False, run_eval=True, extractions_only_datasets=False):
-    eval_datasets = []
+        datasets, checkpoint,
+        overwrite_inference=False,
+        run_eval=True,
+        extractions_only_datasets=False
+):
 
     if extractions_only_datasets:
         # qrels_path is None -> dataset does not have retrieval annotations
-        eval_sets = {k: v for k, v in datasets.items() if v['qrels_path'] is None}
-    else:
-        eval_sets = datasets
+        datasets = {k: v for k, v in datasets.items() if v['qrels_path'] is None}
 
-    for idx_dataset, (collection_name, data) in enumerate(eval_sets.items()):
-        eval_dataset = inference_checkpoint_one_dataset(
+    eval_dir = None
+    for idx_dataset, (collection_name, data) in enumerate(datasets.items()):
+        new_eval_dir = inference_checkpoint_one_dataset(
             checkpoint,
             collection_name,
             data['collection_path'],
@@ -142,12 +144,15 @@ def inference_checkpoint_all_datasets(
             overwrite_inference,
             run_eval=run_eval and idx_dataset == len(datasets) - 1
         )
-        eval_datasets.append(eval_dataset)
 
-    if len(eval_datasets) > 1:
-        assert eval_datasets[0] == eval_datasets[1]
 
-    return eval_datasets[0]
+        if eval_dir is None:
+            eval_dir = new_eval_dir
+
+        assert eval_dir == new_eval_dir, "All eval datasets must be in the same directory"
+
+
+    return eval_dir
 
 
 def inference_checkpoint_one_dataset(
