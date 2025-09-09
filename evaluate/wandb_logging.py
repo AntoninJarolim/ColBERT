@@ -33,9 +33,9 @@ def wandb_log_figure(name, figure):
     wandb.log({name: wandb.Image(figure)})
 
 
-def wandb_log_pr_curve(collection_name, data, color_mapping=None, norm=None, cmap=None):
+def wandb_log_pr_curve(title, data, color_mapping=None, norm=None, cmap=None):
     run_name = wandb.run.name
-    title = f"PR Curve {collection_name} {run_name}"
+    title = f"PR Curve {title} {run_name}"
 
     if len(data[0]) == 3:
         columns = ["Recall", "Precision", "Type"]
@@ -92,7 +92,7 @@ def wandb_log_pr_curve(collection_name, data, color_mapping=None, norm=None, cma
     plt.tight_layout()
     plt.savefig(f"experiments/eval/fig/{title}.pdf", dpi=900)
     wandb.log({
-        f"pr_curve_all_{collection_name}": wandb.Image(fig)
+        f"pr_curve_all_{title}": wandb.Image(fig)
     })
     plt.close(fig)
 
