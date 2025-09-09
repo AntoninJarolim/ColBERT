@@ -16,5 +16,23 @@
     "queries_path": "data/evaluation/queries.eval.ms-marco-human-explained.tsv",
     "extraction_path": "data/evaluation/extracted_relevancy_ms-marco-human-explained.tsv",
     "qrels_path": null
+  },
+  "human_explained_0": {
+    "collection_path": "data/evaluation/collection.ms-marco-human-explained_0.tsv",
+    "queries_path": "data/evaluation/queries.eval.ms-marco-human-explained_0.tsv",
+    "extraction_path": "data/evaluation/extracted_relevancy_ms-marco-human-explained_0.tsv",
+    "qrels_path": null
+  },
+  "human_explained_1": {
+    "collection_path": "data/evaluation/collection.ms-marco-human-explained_1.tsv",
+    "queries_path": "data/evaluation/queries.eval.ms-marco-human-explained_1.tsv",
+    "extraction_path": "data/evaluation/extracted_relevancy_ms-marco-human-explained_1.tsv",
+    "qrels_path": null
+  },
+  "human_explained_2": {
+    "collection_path": "data/evaluation/collection.ms-marco-human-explained_2.tsv",
+    "queries_path": "data/evaluation/queries.eval.ms-marco-human-explained_2.tsv",
+    "extraction_path": "data/evaluation/extracted_relevancy_ms-marco-human-explained_2.tsv",
+    "qrels_path": null
   }
 }
