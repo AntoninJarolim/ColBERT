@@ -40,7 +40,7 @@ def downsample_full_fidelity(data, total_points=1000):
     sampled_data = []
     for bin in bins:
         rnd_indexes = np.random.choice(np.array(list(range(1, len(bin) - 1))),
-                                       size=min(samples_per_bin, len(bin)) - 2,  # for first and last
+                                       size=min(samples_per_bin, len(bin)) - 2,  # -2 for first and last
                                        replace=False)
         sampled_data.extend(bin[rnd_indexes])
 
