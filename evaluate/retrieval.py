@@ -22,9 +22,33 @@ def evaluate_retrieval_checkpoint(ranking_path, qrels_path, collection_path, ind
 
 
 def update_retrieval_figures(evaluation_dir, qrels_path, collection_path):
+    eval_data = filter_retrieval_eval_dirs(evaluation_dir)
+
+    for data in eval_data:
+        file = data['file']
+        steps = data['steps']
+
+        # Evaluate ranking
+        ranking_path = os.path.join(evaluation_dir, file)
+        out_json = evaluate_ms_marco_ranking(collection_path, qrels_path, ranking_path, silent=True)
+        out_json["batch_steps"] = steps
+
+        # Save the evaluation to json
+        index_name = file[:-len('.ranking.tsv')]
+        out_json_path = os.path.join(evaluation_dir, f"{index_name}.retrieval_evaluation.json")
+        with open(out_json_path, "w") as f:
+            json.dump(out_json, f, indent=4)
+
+    agg_retrieval_data = get_coll_agg_retrieval_data(evaluation_dir)
+    wandb_log_retrieval_figs(agg_retrieval_data)
+
+    return agg_retrieval_data
+
+
+def filter_retrieval_eval_dirs(evaluation_dir):
     # Generate evaluation jsons from ranking.tsv
     pattern = re.compile(r'col_name=(.+)\.nbits=\d+\.steps=(\d+)\.ranking.tsv')
-
+    eval_data = []
     for file in os.listdir(evaluation_dir):
         match = pattern.search(file)
         if match:
@@ -33,24 +57,15 @@ def update_retrieval_figures(evaluation_dir, qrels_path, collection_path):
             steps = int(match.group(2))
 
             # Skip 35 samples dataset - not for retrieval
-            if col_name == '35_samples' or col_name == 'human_explained':
+            if col_name != 'official_dev_small':
                 continue
 
-            # Evaluate ranking
-            ranking_path = os.path.join(evaluation_dir, file)
-            out_json = evaluate_ms_marco_ranking(collection_path, qrels_path, ranking_path, silent=True)
-            out_json["batch_steps"] = steps
-
-            # Save the evaluation to json
-            index_name = file[:-len('.ranking.tsv')]
-            out_json_path = os.path.join(evaluation_dir, f"{index_name}.retrieval_evaluation.json")
-            with open(out_json_path, "w") as f:
-                json.dump(out_json, f, indent=4)
-
-    agg_retrieval_data = get_coll_agg_retrieval_data(evaluation_dir)
-    wandb_log_retrieval_figs(agg_retrieval_data)
-
-    return agg_retrieval_data
+            eval_data.append({
+                'file': file,
+                'col_name': col_name,
+                'steps': steps
+            })
+    return eval_data
 
 
 def get_coll_agg_retrieval_data(evaluation_dir):
