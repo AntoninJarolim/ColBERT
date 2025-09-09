@@ -5,6 +5,8 @@ import os.path
 import time
 from datetime import timedelta
 
+from datasets import tqdm
+
 import wandb
 from jsonlines import jsonlines
 
@@ -74,8 +76,11 @@ def get_ranking_name(index_name):
 
 
 def search_dataset(root_folder, queries_path, extraction_path, index_name, overwrite=False):
-    max_ranking_path = Run().get_results_path(get_max_ranking_name(index_name))
-    ranking_path = Run().get_results_path(get_ranking_name(index_name))
+    max_ranking_name = get_max_ranking_name(index_name)
+    ranking_name = get_ranking_name(index_name)
+
+    max_ranking_path = Run().get_results_path(max_ranking_name)
+    ranking_path = Run().get_results_path(ranking_name)
 
     run_inference = not os.path.exists(max_ranking_path) or not os.path.exists(ranking_path)
 
@@ -89,10 +94,10 @@ def search_dataset(root_folder, queries_path, extraction_path, index_name, overw
     queries = Queries(queries_path)
 
     max_ranking = searcher.search_extractions(queries, extraction_path)
-    max_ranking_path = max_ranking.save(max_ranking_path)
+    max_ranking_path = max_ranking.save(max_ranking_name)
 
     ranking = searcher.search_all(queries, k=3)
-    ranking_path = ranking.save(ranking_path)
+    ranking_path = ranking.save(ranking_name)
 
     return ranking_path, max_ranking_path
 
@@ -127,6 +132,9 @@ def inference_checkpoint_all_datasets(
         run_eval=True,
         extractions_only_datasets=False
 ):
+
+    if datasets is None:
+        datasets = load_datasets("datasets.json")
 
     if extractions_only_datasets:
         # qrels_path is None -> dataset does not have retrieval annotations
@@ -229,9 +237,10 @@ def inference_checkpoint_one_dataset(
     assert os.path.dirname(max_ranking_path) == os.path.dirname(ranking_path)
     eval_dir = os.path.dirname(max_ranking_path)
 
+    if qrels_path is not None:
+        update_retrieval_figures(eval_dir, qrels_path, collection_path)
+
     if run_eval:
-        if qrels_path is not None:
-            update_retrieval_figures(eval_dir, qrels_path, collection_path)
         update_extractions_figures(eval_dir, run_name)
 
     wandb.finish()
@@ -285,15 +294,32 @@ def parse_args():
         help='Whether to aggregate results from all found evaluation directories.'
     )
 
-    parsed_args = parser.parse_args()
-    parsed_args.datasets = get_datasets(parsed_args.datasets_json, parsed_args.eval_datasets)
-    return parsed_args
+    parser.add_argument(
+        '--re_evaluate_all',
+        action='store_true',
+        default=False,
+        help='Whether to re-evaluate all found evaluation directories.'
+    )
+
+    args = parser.parse_args()
+
+    if args.re_evaluate_all and args.checkpoint is not None:
+        raise ValueError("Cannot use --checkpoint with --re_evaluate_all. Please choose one.")
+
+    args.datasets = get_datasets(args.datasets_json, args.eval_datasets)
+    return args
+
+
+def run_name_from_path(evaluation_path):
+    return evaluation_path.strip('/').split('/')[-1]
 
 
 def load_run_extraction_results(evaluation_path):
     pr_data_path = os.path.join(evaluation_path, 'aggregated_pr_data.json')
-    all_pr_data = json.load(open(pr_data_path, 'r'))
-    return all_pr_data
+    try:
+        return json.load(open(pr_data_path, 'r'))
+    except FileNotFoundError:
+        return None
 
 
 def aggregate_results(eval_dirs, save_all_experiments_stats, save_all_best_pr_curves):
@@ -308,18 +334,19 @@ def aggregate_results(eval_dirs, save_all_experiments_stats, save_all_best_pr_cu
     # Find the best F1 value based on dev-set threshold
     best_pr_curves_dev_thresholded = []
 
-    for i, eval_dir in enumerate(eval_dirs):
-        print(f"\n\n\n\n ({i + 1} / {len(eval_dirs)}) Evaluation of dir: {eval_dir}")
-        run_name = eval_dir.strip('/').split('/')[-1]
+    for eval_dir in tqdm(eval_dirs, desc="Aggregated evaluation", unit="dir", total=len(eval_dirs)):
+        tqdm.write(f"Current dir: {eval_dir}")
+
+        run_name = run_name_from_path(eval_dir)
 
         time_before = time.time()
 
         wandb_connect_running(run_name)
         all_pr_data = load_run_extraction_results(eval_dir)
+        if all_pr_data is None:
+            print(f"Warning: No extraction results found in {eval_dir}, skipping")
+            continue
 
-        # Thresholding with dev-set best F1 threshold
-        # must be done after dev-set F1 is calculated todo: consider moving this to update_extractions_figures
-        # and ensure that dev-set F1 is calculated
         try:
             best_pr_data_dev_f1 = get_best_pr_data_by_f1(all_pr_data, f1_key='f1_dev_thresholded')
             best_pr_curves_dev_thresholded.extend(best_pr_data_dev_f1)
@@ -392,6 +419,25 @@ def save_all_stats(
         writer.write_all(best_pr_curves_dev_thresholded)
 
 
+def re_evaluate_all():
+    eval_dirs = find_all_results_dirs()
+    datasets = load_datasets("datasets.json")
+
+    retrieval_datasets = {k: v for k, v in datasets.items() if v['qrels_path'] is not None}
+
+    for eval_dir in tqdm(eval_dirs,
+                               desc="Re-evaluating all directories",
+                               total=len(eval_dirs)):
+
+        run_name = run_name_from_path(eval_dir)
+        tqdm.write(f"Current run name: {run_name}")
+
+        for collection_name, collection in retrieval_datasets.items():
+            update_retrieval_figures(eval_dir, collection['qrels_path'], collection['collection_path'])
+
+        update_extractions_figures(eval_dir, run_name)
+
+
 def main():
     args = parse_args()
 
@@ -403,6 +449,9 @@ def main():
             args.checkpoint,
             overwrite_inference=args.overwrite_inference,
         )
+
+    if args.re_evaluate_all:
+        re_evaluate_all()
 
     if args.aggregate_results:
         eval_dirs = find_all_results_dirs()
