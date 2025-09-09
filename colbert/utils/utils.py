@@ -27,7 +27,8 @@ def timestamp(daydir=False):
 
 
 def file_tqdm(file, silent=False):
-    print(f"#> Reading {file.name}")
+    if not silent:
+        print(f"#> Reading {file.name}")
 
     with tqdm.tqdm(total=os.path.getsize(file.name) / 1024.0 / 1024.0, unit="MiB", disable=silent) as pbar:
         for line in file:
