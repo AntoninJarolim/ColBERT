@@ -8,11 +8,12 @@ import traceback
 from collections import defaultdict
 from datetime import timedelta
 
+from tqdm import tqdm
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers.polling import PollingObserver
 
 from evaluate.extractions import downsample_full_fidelity
-from inference import inference_checkpoint_all_datasets
+from inference import inference_checkpoint_all_datasets, re_evaluate_all
 
 # Configurable parameters
 GPU_UTIL_THRESHOLD = 10  # If GPU utilization is above this (in %), we wait.
@@ -44,7 +45,7 @@ def is_gpu_idle():
         return False
 
 
-def run_inference(checkpoint_path, run_eval, extractions_only_datasets=False):
+def run_inference(checkpoint_path, run_eval, ignore_mark_files, extractions_only_datasets):
     """
     Wait until GPU is idle and run inference on the given checkpoint.
     Then, create a marker file to indicate that this checkpoint has been processed.
@@ -60,8 +61,11 @@ def run_inference(checkpoint_path, run_eval, extractions_only_datasets=False):
 
     print(f"Running inference on checkpoint: {checkpoint_path}")
 
-    results_dir = inference_checkpoint_all_datasets(checkpoint_path, run_eval=run_eval,
-                                                   extractions_only_datasets=extractions_only_datasets)
+    datasets = None
+    results_dir = inference_checkpoint_all_datasets(datasets, checkpoint_path,
+                                                    overwrite_inference=ignore_mark_files,
+                                                    run_eval=run_eval,
+                                                    extractions_only_datasets=extractions_only_datasets)
     try:
         # After successful inference, mark the checkpoint as processed
         marker_file = create_marker_file_str(checkpoint_path)
@@ -85,7 +89,7 @@ def has_marker_file(checkpoint):
     return os.path.exists(marker_file)
 
 
-def find_unprocessed_checkpoints(root_dir, ignore_markfiles):
+def find_unprocessed_checkpoints(root_dir, ignore_markfiles, max_per_experiment=5):
     """
     Recursively search for checkpoint files (model.safetensors) in a folder structure like:
     <root_dir>/.../checkpoints/<something>/model.safetensors
@@ -107,13 +111,14 @@ def find_unprocessed_checkpoints(root_dir, ignore_markfiles):
     # Subsample if too many checkpoints
     for experiment_name, values in paths_by_experiment.items():
         paths = [v[0] for v in values]
-        if len(values) > 20:
-            paths = downsample_full_fidelity(paths, 20)
+        if len(values) > 0 > max_per_experiment:  # -1 means no limit
+            paths = downsample_full_fidelity(paths, max_per_experiment)
         paths_by_experiment[experiment_name] = paths
 
     # Flatten the dictionary back to a list of paths
     checkpoint_files = [item for sublist in paths_by_experiment.values() for item in sublist]
 
+    # Remove already processed checkpoints
     unprocessed = []
     for cp in checkpoint_files:
         cp_dirname_path = os.path.dirname(cp)
@@ -143,19 +148,28 @@ class CheckpointEventHandler(FileSystemEventHandler):
     def on_created(self, event):
         if not event.is_directory and event.src_path.endswith('model.safetensors'):
             print(f"New checkpoint detected: {event.src_path}")
-            run_inference(os.path.dirname(event.src_path), True)
+            run_inference(os.path.dirname(event.src_path), True, False, False)
         else:
             print(f"Ignoring event: {event}")
 
 
-def main():
+def arg_parser():
+
     parser = argparse.ArgumentParser(description='Automated Inference Runner')
     parser.add_argument('--experiment_name', type=str,
                         help='Name of current experiment to look for data in experiments/')
     parser.add_argument('--ignore-markfiles', action='store_true',)
     parser.add_argument('--extractions-only-datasets', action='store_true',)
+    parser.add_argument('--max-per-experiment', type=int, default=5,
+                        help='Maximum number of checkpoints to process per experiment (default: 5)'
+                        ' -1 means no limit.')
+    parser.add_argument('--re-eval-all', action='store_true',
+                        help='Re-evaluate all results after processing unprocessed checkpoints.')
     args = parser.parse_args()
-    
+    return args
+
+def main():
+    args = arg_parser()
     if args.experiment_name == "all":
         root_dir = 'experiments/'
     else:
@@ -164,38 +178,56 @@ def main():
     if not os.path.exists(root_dir):
         os.makedirs(root_dir)  # Directory for watching might not exist yet
 
+    # Configuration from arguments
+    ignore_markfiles = args.ignore_markfiles
+    extractions_only_datasets = args.extractions_only_datasets
+    experiment_name = args.experiment_name
+    max_per_experiment = args.max_per_experiment
+    re_eval_all = args.re_eval_all
+
     # Process any existing unprocessed checkpoints
-    while True:
-        unprocessed = find_unprocessed_checkpoints(root_dir, args.ignore_markfiles)
-        if not unprocessed:
-            print("All checkpoints have been processed.")
-            break
+    run_auto_inference(extractions_only_datasets, ignore_markfiles, root_dir, max_per_experiment)
+    print("All checkpoints have been processed.")
 
-        print(f"Found {len(unprocessed)} unprocessed checkpoint(s):")
-        print('\n\t'.join(unprocessed))
-        unprocessed = unprocessed[186:]
-        for i, cp_path in enumerate(unprocessed):
-            print(f"\n\n\n\n ({i + 1} / {len(unprocessed)}) Running inference on {cp_path}")
-            time_before = time.time()
-            run_eval = i + 1 == len(unprocessed)
-            run_inference(cp_path, run_eval, args.extractions_only_datasets)
-            time_after = time.time()
-            duration = timedelta(seconds=(time_after - time_before))
-            print(f"\n Inference completed in {duration} (HH:MM:SS)\n")
+    # Optionally re-evaluate all results, use when evaluation metrics are updated,
+    # and you do not mind waiting for it to finish before watching for new checkpoints
+    if re_eval_all:
+        re_evaluate_all()
 
+    # Remain active to watch for new checkpoints
+    watch_new_checkpoints(experiment_name, root_dir)
+    print("Stopped watching for new checkpoints.")
+
+
+def watch_new_checkpoints(experiment_name, root_dir):
     # Set up watchdog observer to monitor for new checkpoint files
-    event_handler = CheckpointEventHandler(root_dir, args.experiment_name)
+    event_handler = CheckpointEventHandler(root_dir, experiment_name)
     observer = PollingObserver()
     observer.schedule(event_handler, path=root_dir, recursive=True)
     observer.start()
     print(f"Watching directory {root_dir} for new checkpoints...")
-
     try:
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
         observer.stop()
     observer.join()
+
+
+def run_auto_inference(extractions_only_datasets, ignore_markfiles, root_dir, max_per_experiment):
+    while unprocessed := find_unprocessed_checkpoints(root_dir, ignore_markfiles, max_per_experiment):
+        print(f"Found {len(unprocessed)} unprocessed checkpoint(s):", '\n\t'.join(unprocessed))
+
+        unprocessed = unprocessed[186:]
+        for cp_path in tqdm(unprocessed, desc="Running inference", unit="checkpoint"):
+            tqdm.write(f"Running inference on {cp_path}")
+
+            time_before = time.time()
+            run_eval = False
+            run_inference(cp_path, run_eval, ignore_markfiles, extractions_only_datasets)
+            time_after = time.time()
+            duration = timedelta(seconds=(time_after - time_before))
+            print(f"\n Inference completed in {duration} (HH:MM:SS)\n")
 
 
 if __name__ == '__main__':
