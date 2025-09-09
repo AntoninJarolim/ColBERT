@@ -3,6 +3,7 @@ import os
 import re
 from collections import defaultdict
 import torch
+from faiss.contrib.exhaustive_search import threshold_radius
 
 from matplotlib import pyplot as plt
 import matplotlib.colors as mcolors
@@ -114,7 +115,7 @@ def _extraction_baseline_random(targets):
 
     df_random_data = []
     for recall, precision, thr in data_rnd:
-        df_random_data.append((recall, precision, thr, "Random"))
+        df_random_data.append((recall, precision, thr))
 
     return df_random_data
 
@@ -262,32 +263,71 @@ def _macro_f1(thresholds, targets, predictions, collection_name):
         f"Targets shape {targets.shape} and predictions shape {predictions.shape} must be the same."
 
     # precisions_b, recalls_b, f1s_b = _f1_batched(t, targets, predictions)
-    pr_data = []
+    pr_data = _macro_f1_data(collection_name, predictions, targets, thresholds)
 
+    out = best_from_pr_data(pr_data)
+
+    return out
+
+
+def best_from_pr_data(pr_data):
+    max_by_f1 = sorted(pr_data, key=lambda x: x['macro-F1'], reverse=True)[0]
+    best_f1 = max_by_f1['macro-F1']
+    recall_best_f1 = max_by_f1['Recall']
+    best_f1_threshold = max_by_f1['Threshold']
+    # match sklearn format
+    pr_data = [(d['Recall'], d['Precision'], d['Threshold']) for d in pr_data]
+    out = {
+        'best_f1': best_f1,
+        'best_f1_threshold': best_f1_threshold,
+        'recall_best_f1': recall_best_f1,
+        'pr_data': pr_data
+    }
+    return out
+
+
+def _f1_max_annotator(shared, threshold):
+    no_positive_labels, targets, targets_b = targets_from_results(shared[0], "human_explained_shared")
+    nr_samples = len(targets)
+    nr_annotators = len(shared)
+
+    annotator_precisions = np.zeros((nr_annotators, nr_samples))
+    annotator_recalls = np.zeros((nr_annotators, nr_samples))
+    annotator_f1s = np.zeros((nr_annotators, nr_samples))
+
+    for ann_id, annotator_data in enumerate(shared):
+        predictions, predictions_b = predictions_from_results(annotator_data, no_positive_labels)
+
+        precision, recall, f1 = _f1_batched(threshold, targets_b, predictions_b)
+        annotator_precisions[ann_id] = precision
+        annotator_recalls[ann_id] = recall
+        annotator_f1s[ann_id] = f1
+
+    f1s_max_idxs = annotator_f1s.argmax(axis=0)
+
+    f1s_maxed = annotator_f1s[f1s_max_idxs, :]
+    precisions_maxed = annotator_precisions[f1s_max_idxs, :]
+    recalls_maxed = annotator_recalls[f1s_max_idxs, :]
+
+    macro_precision = precisions_maxed.mean()
+    macro_recall = recalls_maxed.mean()
+    macro_f1 = f1s_maxed.mean()
+
+    return macro_precision, macro_recall, macro_f1
+
+
+def _macro_f1_data(collection_name, predictions, targets, thresholds):
+    pr_data = []
     for t in tqdm(thresholds, desc=f"Computing macro F1 for collection-{collection_name}", total=len(thresholds)):
         macro_precision, macro_recall, macro_f1 = f1_batched_numba(t, targets, predictions)
         pr_data.append({
             "Threshold": t,
             "Precision": macro_precision,
             "Recall": macro_recall,
-            "F1": macro_f1,
+            "macro-F1": macro_f1,
         })
+    return pr_data
 
-    max_by_f1 = sorted(pr_data, key=lambda x: x['macro-F1'], reverse=True)[0]
-
-    best_f1 = max_by_f1['macro-F1']
-    recall_best_f1 = max_by_f1['macro-Recall']
-    best_f1_threshold = max_by_f1['Threshold']
-
-    # match sklearn format
-    pr_data = [(d['Recall'], d['Precision'], d['Threshold']) for d in pr_data]
-
-    return {
-        'best_f1': best_f1,
-        'best_f1_threshold': best_f1_threshold,
-        'recall_best_f1': recall_best_f1,
-        'pr_data': pr_data
-    }
 
 def _explode_by_type(pr_curves_by_cp):
     df_data = []
@@ -297,36 +337,142 @@ def _explode_by_type(pr_curves_by_cp):
     return df_data
 
 
+def split_shared_unique(results_dict):
+    annotator_data = {ann: {(d["q_id"]): d for d in res.data}
+                      for ann, res in results_dict.items()}
+
+    data_all = defaultdict(list)
+    for ann, data in annotator_data.items():
+        for key, d in data.items():
+            data_all[key].append(d)
+
+    shared = {k: v for k, v in data_all.items() if len(v) > 1}
+    unique = {k: v[0] for k, v in data_all.items() if len(v) == 1}
+
+    return shared, unique
+
+
+def aggregate_multi_ann_data(files_by_coll):
+    multi_ann_collection_pattern = re.compile(r'human_explained_(.+)')
+
+    multi_ann_data = defaultdict(dict)
+    for collection_name, results_per_step in files_by_coll.items():
+        match = multi_ann_collection_pattern.search(collection_name)
+        if match:
+            annotation_id = int(match.group(1))
+
+            for file_data in results_per_step:
+                extraction_results = file_data['extraction_results']
+                steps = file_data['steps']
+
+                multi_ann_data[steps][annotation_id] = extraction_results
+    return multi_ann_data
+
+
+def find_all_thresholds(results_dict):
+    all_max_scores = []
+    for data in results_dict.values():
+        max_scores = [np.array(line['max_scores']) for line in data]
+        all_max_scores.extend(max_scores)
+
+    all_thresholds = _mid_thresholds(all_max_scores)
+    return all_thresholds
+
+
+def eval_multi_ann_data_all_steps(files_by_coll):
+    multi_ann_data = aggregate_multi_ann_data(files_by_coll)
+
+    results_all = defaultdict(dict)
+    for steps, results_dict in multi_ann_data.items():
+        shared, unique = split_shared_unique(results_dict)
+        all_thresholds = find_all_thresholds(results_dict)
+
+        shared_values = list(shared.values())
+        unique_values = list(unique.values())
+
+        pr_data = eval_multi_ann_data(shared_values, unique_values, all_thresholds)
+        results_all[steps] = best_from_pr_data(pr_data)
+
+    results_all = dict(results_all)
+    return results_all
+
+
+def eval_multi_ann_data(shared_data, unique_data, thrs):
+    def unique_results():
+        no_positive_labels_targets, targets, targets_b = targets_from_results(unique_data, "human_explained_unique")
+        predictions, predictions_b = predictions_from_results(unique_data, no_positive_labels_targets)
+        return _macro_f1_data("human_explained_unique", predictions_b, targets_b, thrs)
+
+    def shared_results():
+        # Transpose shared to have shape (nr_samples, nr_annotators)
+        shared = list(zip(*shared_data))
+
+        pr_data = []
+        for threshold in tqdm(thrs, desc="Computing macro F1 for shared annotations", total=len(thrs)):
+            precision, recall, macro_f1 = _f1_max_annotator(shared, threshold)
+            pr_data.append({
+                'Threshold': threshold,
+                'Precision': precision,
+                'Recall': recall,
+                'macro-F1': macro_f1,
+            })
+        return pr_data
+
+    # Get macro results for unique and shared
+    macro_results_uq = unique_results()
+    macro_results_sh = shared_results()
+
+    # Final F1 is weighted average of shared and unique by nr of samples
+    nr_shared = len(shared_data)
+    nr_unique = len(unique_data)
+    total = nr_shared + nr_unique
+
+    def weight_avg(value_a, value_b):
+        return (nr_unique * value_a + nr_shared * value_b) / total
+
+    final_results = []
+    for uq, sh in zip(macro_results_uq, macro_results_sh):
+        final_results.append({
+            'Threshold': uq['Threshold'],
+            'Precision': weight_avg(uq['Precision'], sh['Precision']),
+            'Recall': weight_avg(uq['Recall'], sh['Recall']),
+            'macro-F1': weight_avg(uq['macro-F1'], sh['macro-F1']),
+        })
+
+    return final_results
+
+
 def update_extractions_figures(evaluation_dir, run_name):
     pattern = re.compile(r'col_name=(.+)\.nbits=\d+\.steps=(\d+)\.extraction_scores\.jsonl$')
-
     files_by_coll = _agg_files_by_collection(evaluation_dir, pattern)
 
     all_pr_data = defaultdict(list)
+
+    multiann_data = eval_multi_ann_data_all_steps(files_by_coll)
+    all_pr_data['human_explained_shared'] = [
+        {
+            'checkpoint_steps': steps,
+            'data-name': f"Max-Values Checkpoint {steps}",
+            'run_name': run_name,
+            'targets': None,  # not used for multi-annotator
+            'micro_results': None,  # not used for multi-annotator
+            'macro_results': values
+        }
+        for steps, values in multiann_data.items()
+    ]
+
     for collection_name, files_to_eval in files_by_coll.items():
 
         # Add random baseline - first get targets - it is the same for all checkpoints, so just use the first
-        targets = [
-            np.array(line['extraction_binary'], dtype=bool)
-            for line in files_to_eval[0]['extraction_results']
-        ]
-
-        # Find targets with no positive labels
-        no_positive_labels = find_no_positive_labels(collection_name, targets)
-
-        # Remove targets with no positive labels
-        targets = [t for i, t in enumerate(targets) if i not in no_positive_labels]
-        targets_b = pad_and_stack(targets, pad_value=0)
+        collection_extractions = files_to_eval[0]['extraction_results']
+        no_positive_labels, targets, targets_b = targets_from_results(collection_extractions, collection_name)
 
         for i, file_data in enumerate(files_to_eval):
             extraction_results = file_data['extraction_results']
             steps = file_data['steps']
 
             # Get predictions and remove those with no positive labels
-            predictions = [np.array(line['max_scores'])
-                           for i, line in enumerate(extraction_results)
-                           if i not in no_positive_labels]
-            predictions_b = pad_and_stack(predictions, pad_value=0)
+            predictions, predictions_b = predictions_from_results(extraction_results, no_positive_labels)
             thrs = _mid_thresholds(predictions)
 
             # Compute results
@@ -339,20 +485,34 @@ def update_extractions_figures(evaluation_dir, run_name):
                 {
                     'data-name': f"Max-Values Checkpoint {steps}",
                     'run_name': run_name,
+                    'targets': targets,
                     'checkpoint_steps': steps,
                     'micro_results': micro_results,
                     'macro_results': macro_results
                 }
             )
 
-        # add random scores baseline
-        pr_curves_by_cp = {entry['checkpoint_steps']: entry['micro_results']['pr_data'] for entry in all_pr_data[collection_name]}
-        pr_curves_by_cp["Random"] = _extraction_baseline_random(targets)
+    for collection_name, entries in all_pr_data.items():
+        for zoom in ["micro", "macro"]:
+            data_type = f'{zoom}_results'
+            if entries[0][data_type] is None:
+                continue
 
-        # Log the PR curve to wandb
-        df_data = _explode_by_type(pr_curves_by_cp)
-        color_mapping, norm, cmap = _cp_palette(df_data)
-        wandb_log_pr_curve(collection_name, df_data, color_mapping=color_mapping, norm=norm, cmap=cmap)
+            pr_curves_by_cp = {
+                entry['checkpoint_steps']: entry[data_type]['pr_data']
+                for entry in entries
+            }
+
+            # add random scores baseline
+            if entries[0]['targets'] is not None:
+                targets = entries[0]['targets']
+                pr_curves_by_cp["Random"] = _extraction_baseline_random(targets)
+
+            # Log the PR curve to wandb
+            df_data = _explode_by_type(pr_curves_by_cp)
+            color_mapping, norm, cmap = _cp_palette(df_data)
+            wandb_log_pr_curve(
+                collection_name + zoom, df_data, color_mapping=color_mapping, norm=norm, cmap=cmap)
 
     # Log the F1 scores to wandb
     f1_scores = _agg_f1_by_collection(all_pr_data)
@@ -363,9 +523,48 @@ def update_extractions_figures(evaluation_dir, run_name):
 
     # Save all PR data to a file
     pr_data_path = os.path.join(evaluation_dir, 'aggregated_pr_data.json')
+    all_pr_data = remove_ndarrays(all_pr_data)
     json.dump(all_pr_data, open(pr_data_path, 'w'))
 
     return all_pr_data
+
+
+def remove_ndarrays(obj):
+    if isinstance(obj, dict):
+        return {
+            k: remove_ndarrays(v)
+            for k, v in obj.items()
+            if not isinstance(v, np.ndarray)
+        }
+    elif isinstance(obj, list):
+        return [
+            remove_ndarrays(v)
+            for v in obj
+            if not isinstance(v, np.ndarray)
+        ]
+    else:
+        return obj
+
+
+def predictions_from_results(extraction_results, no_positive_labels):
+    predictions = [np.array(line['max_scores'])
+                   for i, line in enumerate(extraction_results)
+                   if i not in no_positive_labels]
+    predictions_b = pad_and_stack(predictions, pad_value=0)
+    return predictions, predictions_b
+
+
+def targets_from_results(collection_extractions, collection_name):
+    targets = [
+        np.array(line['extraction_binary'], dtype=bool)
+        for line in collection_extractions
+    ]
+    # Find targets with no positive labels
+    no_positive_labels = find_no_positive_labels(collection_name, targets)
+    # Remove targets with no positive labels
+    targets = [t for i, t in enumerate(targets) if i not in no_positive_labels]
+    targets_b = pad_and_stack(targets, pad_value=0)
+    return no_positive_labels, targets, targets_b
 
 
 def _agg_files_by_collection(evaluation_dir, pattern):
@@ -393,7 +592,7 @@ def _agg_files_by_collection(evaluation_dir, pattern):
 def _agg_f1_by_collection(all_pr_data):
     return {
         collection_name: {
-            entry['checkpoint_steps']: entry['best_f1']
+            entry['checkpoint_steps']: entry['macro_results']['best_f1']
             for entry in entries
         }
         for collection_name, entries in all_pr_data.items()
@@ -402,10 +601,11 @@ def _agg_f1_by_collection(all_pr_data):
 
 def find_no_positive_labels(collection_name, targets):
     no_positive_labels = [i for i, t in enumerate(targets) if np.sum(t.astype(int)) == 0]
-    if no_positive_labels:
+    if no_positive_labels and not hasattr(find_no_positive_labels, '_warned'):
         print(
             f"Warning: {len(no_positive_labels)} samples in collection '{collection_name}' have no positive labels. "
             f"They will be ignored in macro F1 computation.")
+        find_no_positive_labels._warned = True
 
     return no_positive_labels
 
@@ -436,16 +636,13 @@ def add_dev_thresholded_f1s(all_pr_data):
     def find_best_dev_threshold(all_pr_data):
         best_f1s = get_best_pr_data_by_f1(all_pr_data)
         dev_f1 = [best_f1 for best_f1 in best_f1s if best_f1['collection_name'] == 'official_dev_small'][0]
-        dev_f1_threshold = dev_f1['best_f1_threshold']
+        dev_f1_threshold = dev_f1['macro_results']['best_f1_threshold']
         return dev_f1_threshold
 
     def find_f1_by_threshold(pr_data, threshold):
         ds = []
 
-        for p, r, t, n in pr_data:
-            if n == 'Random':
-                continue
-
+        for p, r, t in pr_data:
             ds.append((p, r, t))
 
         ds = sorted(ds, key=lambda x: x[2])
@@ -474,7 +671,7 @@ def add_dev_thresholded_f1s(all_pr_data):
             if dev_f1_threshold is None:
                 f1 = None
             else:
-                f1 = find_f1_by_threshold(cp_prs['pr_data'], dev_f1_threshold)
+                f1 = find_f1_by_threshold(cp_prs['macro_results']['pr_data'], dev_f1_threshold)
 
             f1_updated_sample = {
                 'f1_dev_thresholded': f1,
@@ -487,10 +684,11 @@ def add_dev_thresholded_f1s(all_pr_data):
 
 def get_best_pr_data_by_f1(all_pr_data, f1_key='best_f1'):
     # Remove f1_key that equals None (so sorting works)
-    all_pr_data = {k: [v for v in v if v[f1_key] is not None] for k, v in all_pr_data.items()}
+    all_pr_data = {k: [v for v in v if v['macro_results'][f1_key] is not None] for k, v in all_pr_data.items()}
 
     # Sort by f1_key and get the best one
-    best_pr_curves = {k: sorted(v, key=lambda x: x[f1_key], reverse=True)[0] for k, v in all_pr_data.items()}
+    best_pr_curves = {k: sorted(v, key=lambda x: x['macro_results'][f1_key], reverse=True)[0] for k, v in
+                      all_pr_data.items()}
 
     # reshape 'collection: [{data}, {data}]' to 'collection: {data}', as we only have one best
     return [{'collection_name': k, **v} for k, v in best_pr_curves.items()]
