@@ -6,6 +6,7 @@ import time
 import glob
 import traceback
 from collections import defaultdict
+from csv import excel_tab
 from datetime import timedelta
 
 from tqdm import tqdm
@@ -45,10 +46,11 @@ def is_gpu_idle():
         return False
 
 
-def run_inference(checkpoint_path, run_eval, ignore_mark_files, extractions_only_datasets):
+def run_inference(checkpoint_path, extractions_only_datasets, run_eval):
     """
     Wait until GPU is idle and run inference on the given checkpoint.
     Then, create a marker file to indicate that this checkpoint has been processed.
+    Run_eval is false by default to avoid re-evaluation during automatic runs.
     """
     # Wait for GPU to be idle
     while not is_gpu_idle():
@@ -63,7 +65,7 @@ def run_inference(checkpoint_path, run_eval, ignore_mark_files, extractions_only
 
     datasets = None
     results_dir = inference_checkpoint_all_datasets(datasets, checkpoint_path,
-                                                    overwrite_inference=ignore_mark_files,
+                                                    overwrite_inference=True,  # decided to process == overwrite
                                                     run_eval=run_eval,
                                                     extractions_only_datasets=extractions_only_datasets)
     try:
@@ -89,6 +91,61 @@ def has_marker_file(checkpoint):
     return os.path.exists(marker_file)
 
 
+def remove_inference_run_files(root_dir):
+    """
+    Recursively remove all files named 'inference_run_dir.txt' under root_dir.
+    """
+    for dirpath, dirnames, filenames in os.walk(root_dir):
+        for filename in filenames:
+            if filename == "inference_run_dir.txt":
+                file_path = os.path.join(dirpath, filename)
+                try:
+                    os.remove(file_path)
+                    print(f"Removed: {file_path}")
+                except Exception as e:
+                    print(f"Failed to remove {file_path}: {e}")
+
+def batch_count_missing(cp_path):
+    cp_dirname_path = os.path.dirname(cp_path)
+    dir_cp = cp_dirname_path.split("/")[-1]
+
+    if dir_cp == "colbert":
+        print(f"Skipping {cp_path} directory because batch step count is not there.")
+        return True
+    return False
+
+def filter_processed_checkpoints(paths_by_experiment):
+    """
+    Given a dictionary of experiment names to lists of checkpoint paths,
+    filter out those that have already been processed (i.e. have the marker file).
+    """
+    filtered = {}
+    for experiment_name, paths in paths_by_experiment.items():
+        unprocessed = [p for p in paths
+                       if not has_marker_file(p) and not batch_count_missing(p)]
+        if unprocessed:
+            filtered[experiment_name] = unprocessed
+    return filtered
+
+
+def get_cp_count(paths):
+    return sum(len(v) for v in paths.values())
+
+def subsample_cp_counts(paths_by_experiment, max_per_experiment):
+
+
+    print(f"Total unprocessed checkpoints found: {get_cp_count(paths_by_experiment)}")
+    for experiment_name, paths in paths_by_experiment.items():
+        if not max_per_experiment == -1: # -1 means no limit
+            if len(paths) > 0:
+                paths = downsample_full_fidelity(paths, max_per_experiment)
+        paths_by_experiment[experiment_name] = paths
+
+    print(f"Total unprocessed checkpoints after subsampling: {get_cp_count(paths_by_experiment)}")
+
+    return paths_by_experiment
+
+
 def find_unprocessed_checkpoints(root_dir, ignore_markfiles, max_per_experiment=5):
     """
     Recursively search for checkpoint files (model.safetensors) in a folder structure like:
@@ -98,7 +155,6 @@ def find_unprocessed_checkpoints(root_dir, ignore_markfiles, max_per_experiment=
     pattern = os.path.join(root_dir, '**', 'checkpoints', '*', 'model.safetensors')
     checkpoint_files = glob.glob(pattern, recursive=True)
 
-    # Skip checkpoints with experiments that have way too many checkpoints
     paths_by_experiment = defaultdict(list)
     for cp in checkpoint_files:
         experiment_name = cp.split("/")[3]
@@ -108,31 +164,20 @@ def find_unprocessed_checkpoints(root_dir, ignore_markfiles, max_per_experiment=
     # sort by steps
     paths_by_experiment = {k: sorted(v, key=lambda x: x[1]) for k, v in paths_by_experiment.items()}
 
+    # remove steps
+    paths_by_experiment = {k: [x[0] for x in v] for k, v in paths_by_experiment.items()}
+    print(f"Found {get_cp_count(paths_by_experiment)} total checkpoints across {len(paths_by_experiment)} experiments.")
+
+    if not ignore_markfiles:
+        paths_by_experiment = filter_processed_checkpoints(paths_by_experiment)
+
     # Subsample if too many checkpoints
-    for experiment_name, values in paths_by_experiment.items():
-        paths = [v[0] for v in values]
-        if len(values) > 0 > max_per_experiment:  # -1 means no limit
-            paths = downsample_full_fidelity(paths, max_per_experiment)
-        paths_by_experiment[experiment_name] = paths
+    paths_by_experiment = subsample_cp_counts(paths_by_experiment, max_per_experiment)
 
     # Flatten the dictionary back to a list of paths
     checkpoint_files = [item for sublist in paths_by_experiment.values() for item in sublist]
-
-    # Remove already processed checkpoints
-    unprocessed = []
-    for cp in checkpoint_files:
-        cp_dirname_path = os.path.dirname(cp)
-
-        dir_cp = cp_dirname_path.split("/")[-1]
-        if dir_cp == "colbert":
-            print(f"Skipping {cp} directory because batch step count is not there.")
-            continue
-
-        if ignore_markfiles or not has_marker_file(cp):
-            unprocessed.append(cp_dirname_path)
-
-    unprocessed = sorted(unprocessed)  # Sort for consistent processing
-    return unprocessed
+    checkpoint_files = sorted(checkpoint_files)  # Sort for consistent processing
+    return checkpoint_files
 
 
 class CheckpointEventHandler(FileSystemEventHandler):
@@ -148,15 +193,17 @@ class CheckpointEventHandler(FileSystemEventHandler):
     def on_created(self, event):
         if not event.is_directory and event.src_path.endswith('model.safetensors'):
             print(f"New checkpoint detected: {event.src_path}")
-            run_inference(os.path.dirname(event.src_path), True, False, False)
+            run_eval = True # Run evaluation for new checkpoints if auto-detected
+            extractions_only_datasets = False
+            cp_dir = os.path.dirname(event.src_path)
+            run_inference(cp_dir, extractions_only_datasets, run_eval)
         else:
             print(f"Ignoring event: {event}")
 
 
 def arg_parser():
-
     parser = argparse.ArgumentParser(description='Automated Inference Runner')
-    parser.add_argument('--experiment_name', type=str,
+    parser.add_argument('--experiment_name', type=str, default='all',
                         help='Name of current experiment to look for data in experiments/')
     parser.add_argument('--ignore-markfiles', action='store_true',)
     parser.add_argument('--extractions-only-datasets', action='store_true',)
@@ -165,15 +212,24 @@ def arg_parser():
                         ' -1 means no limit.')
     parser.add_argument('--re-eval-all', action='store_true',
                         help='Re-evaluate all results after processing unprocessed checkpoints.')
+
+    parser.add_argument('--remove-inference-run-files', action='store_true',
+                        help='Remove all inference_run_dir.txt files under experiments/.')
     args = parser.parse_args()
     return args
 
 def main():
     args = arg_parser()
+
     if args.experiment_name == "all":
         root_dir = 'experiments/'
     else:
         root_dir = os.path.join('experiments', args.experiment_name, 'train')
+
+    if args.remove_inference_run_files:
+        remove_inference_run_files(root_dir)
+        print("Removed all inference_run_dir.txt files under experiments/.")
+        exit(0)
 
     if not os.path.exists(root_dir):
         os.makedirs(root_dir)  # Directory for watching might not exist yet
@@ -215,16 +271,15 @@ def watch_new_checkpoints(experiment_name, root_dir):
 
 
 def run_auto_inference(extractions_only_datasets, ignore_markfiles, root_dir, max_per_experiment):
+    run_evaluation = False  # Do not run evaluation during inference of multiple checkpoints
+
     while unprocessed := find_unprocessed_checkpoints(root_dir, ignore_markfiles, max_per_experiment):
         print(f"Found {len(unprocessed)} unprocessed checkpoint(s):", '\n\t'.join(unprocessed))
-
-        unprocessed = unprocessed[186:]
         for cp_path in tqdm(unprocessed, desc="Running inference", unit="checkpoint"):
             tqdm.write(f"Running inference on {cp_path}")
 
             time_before = time.time()
-            run_eval = False
-            run_inference(cp_path, run_eval, ignore_markfiles, extractions_only_datasets)
+            run_inference(cp_path, extractions_only_datasets, run_evaluation)
             time_after = time.time()
             duration = timedelta(seconds=(time_after - time_before))
             print(f"\n Inference completed in {duration} (HH:MM:SS)\n")
