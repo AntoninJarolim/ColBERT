@@ -523,25 +523,19 @@ def update_extractions_figures(evaluation_dir, run_name):
 
     # Save all PR data to a file
     pr_data_path = os.path.join(evaluation_dir, 'aggregated_pr_data.json')
-    all_pr_data = remove_ndarrays(all_pr_data)
+    all_pr_data = convert_ndarrays(all_pr_data)
     json.dump(all_pr_data, open(pr_data_path, 'w'))
 
     return all_pr_data
 
 
-def remove_ndarrays(obj):
+def convert_ndarrays(obj):
     if isinstance(obj, dict):
-        return {
-            k: remove_ndarrays(v)
-            for k, v in obj.items()
-            if not isinstance(v, np.ndarray)
-        }
+        return {k: convert_ndarrays(v) for k, v in obj.items()}
     elif isinstance(obj, list):
-        return [
-            remove_ndarrays(v)
-            for v in obj
-            if not isinstance(v, np.ndarray)
-        ]
+        return [convert_ndarrays(v) for v in obj]
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
     else:
         return obj
 
