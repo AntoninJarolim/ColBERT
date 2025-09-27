@@ -540,11 +540,12 @@ def convert_ndarrays(obj):
         return obj
 
 
+
 def predictions_from_results(extraction_results, no_positive_labels):
     predictions = [np.array(line['max_scores'])
                    for i, line in enumerate(extraction_results)
                    if i not in no_positive_labels]
-    predictions_b = pad_and_stack(predictions, pad_value=0)
+    predictions_b = pad_and_stack(predictions, pad_value=-np.inf)
     return predictions, predictions_b
 
 
