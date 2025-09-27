@@ -54,10 +54,16 @@ def wandb_log_pr_curve(title, data, color_mapping=None, norm=None, cmap=None):
             df_sub = df[df["Type"] == t]
             color = color_mapping[t] if color_mapping and t in color_mapping else None
             label = None if "Max-Values" in t else t  # Only label 'Random'
-            sns.lineplot(data=df_sub, x="Recall", y="Precision", ax=ax, color=color, label=label)
+            sns.lineplot(data=df_sub, x="Recall", y="Precision", ax=ax, color=color, label=label,
+                         estimator=None,  # <- skip mean aggregation
+                         errorbar=None  # <- skip confidence interval bootstrapping)
+                         )
     else:
         # Plot all lines with default colors (hue will do the trick)
-        sns.lineplot(data=df, x="Recall", y="Precision", hue="Type", ax=ax)
+        sns.lineplot(data=df, x="Recall", y="Precision", hue="Type", ax=ax,
+                         estimator=None,  # <- skip mean aggregation
+                         errorbar=None)  # <- skip confidence interval bootstrapping)
+
 
     ax.set_title(title)
     ax.set_ylim(0, 1)
