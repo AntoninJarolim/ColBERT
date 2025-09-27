@@ -2,6 +2,7 @@ import argparse
 import glob
 import json
 import os.path
+import sys
 import time
 from datetime import timedelta
 
@@ -132,7 +133,6 @@ def inference_checkpoint_all_datasets(
         run_eval=True,
         extractions_only_datasets=False
 ):
-
     if datasets is None:
         datasets = load_datasets("datasets.json")
 
@@ -153,12 +153,10 @@ def inference_checkpoint_all_datasets(
             run_eval=run_eval and idx_dataset == len(datasets) - 1
         )
 
-
         if eval_dir is None:
             eval_dir = new_eval_dir
 
         assert eval_dir == new_eval_dir, "All eval datasets must be in the same directory"
-
 
     return eval_dir
 
@@ -347,6 +345,10 @@ def aggregate_results(eval_dirs, save_all_experiments_stats, save_all_best_pr_cu
             print(f"Warning: No extraction results found in {eval_dir}, skipping")
             continue
 
+        if 'official_dev_small' not in all_pr_data:
+            print(f"Warning: No 'official_dev_small' data found in {eval_dir}, skipping")
+            continue
+
         try:
             best_pr_data_dev_f1 = get_best_pr_data_by_f1(all_pr_data, f1_key='f1_dev_thresholded')
             best_pr_curves_dev_thresholded.extend(best_pr_data_dev_f1)
@@ -391,7 +393,8 @@ def combine_retrieval_and_extraction_stats(all_pr_data, all_retrieval_data, run_
 
         combined_stats.append(
             {
-                'best_f1': data_cp['best_f1'],
+                'best_f1_micro': data_cp['micro_results']['best_f1'],
+                'best_f1_macro': data_cp['macro_results']['best_f1'],
                 'recall@10': recall,
                 'steps': steps,
                 'run_name': run_name
@@ -419,6 +422,16 @@ def save_all_stats(
         writer.write_all(best_pr_curves_dev_thresholded)
 
 
+def safe_eval_all(eval_dir, retrieval_datasets, run_name):
+    try:
+        for collection_name, collection in retrieval_datasets.items():
+            update_retrieval_figures(eval_dir, collection['qrels_path'], collection['collection_path'])
+
+        update_extractions_figures(eval_dir, run_name)
+
+    except Exception as e:
+        print(f"Error during re-evaluation of {eval_dir}: {e}", file=sys.stderr)
+
 def re_evaluate_all():
     eval_dirs = find_all_results_dirs()
     datasets = load_datasets("datasets.json")
@@ -426,16 +439,25 @@ def re_evaluate_all():
     retrieval_datasets = {k: v for k, v in datasets.items() if v['qrels_path'] is not None}
 
     for eval_dir in tqdm(eval_dirs,
-                               desc="Re-evaluating all directories",
-                               total=len(eval_dirs)):
+                         desc="Re-evaluating all directories",
+                         total=len(eval_dirs)):
+        tqdm.write(f"Current dir: {eval_dir}")
 
         run_name = run_name_from_path(eval_dir)
-        tqdm.write(f"Current run name: {run_name}")
+        wandb_connect_running(run_name)
+        tqdm.write(f"\nCurrent run name: {run_name}")
 
-        for collection_name, collection in retrieval_datasets.items():
-            update_retrieval_figures(eval_dir, collection['qrels_path'], collection['collection_path'])
+        # Run evaluation for all datasets with retrieval annotations
+        safe_eval_all(eval_dir, retrieval_datasets, run_name)
 
-        update_extractions_figures(eval_dir, run_name)
+        wandb.finish()
+
+
+def run_aggregate_results(save_all_experiments_stats, save_all_best_pr_curves):
+    eval_dirs = find_all_results_dirs()
+    print("Evaluating found directories:\n" + '\n'.join([f'\t{e_dir}' for e_dir in eval_dirs]))
+    aggregate_results(eval_dirs, save_all_experiments_stats, save_all_best_pr_curves)
+    aggregate_eval(save_all_experiments_stats, save_all_best_pr_curves)
 
 
 def main():
@@ -454,10 +476,10 @@ def main():
         re_evaluate_all()
 
     if args.aggregate_results:
-        eval_dirs = find_all_results_dirs()
-        print("Evaluating found directories:\n" + '\n'.join([f'\t{e_dir}' for e_dir in eval_dirs]))
-        aggregate_results(eval_dirs, args.save_all_experiments_stats, args.save_all_best_pr_curves)
-        aggregate_eval(args.datasets_json, args.save_all_experiments_stats)
+        run_aggregate_results(
+            args.save_all_experiments_stats,
+            args.save_all_best_pr_curves,
+        )
 
 
 if __name__ == '__main__':
