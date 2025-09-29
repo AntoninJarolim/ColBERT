@@ -64,20 +64,22 @@ def max_f1_score(precision, recall):
 def _get_pr_data(all_extractions, all_max_scores):
     all_max_scores = torch.nn.Sigmoid()(torch.tensor(all_max_scores)).detach().numpy()
     # Compute precision-recall curve
-    precision, recall, thresholds = precision_recall_curve(
+    precisions, recalls, thresholds = precision_recall_curve(
         np.array(all_extractions), all_max_scores, drop_intermediate=True
     )
 
     # Prepare data for wandb Table
-    f1s = _f1_formula(precision, recall)
-    data = list(zip(recall, precision, thresholds, f1s))
+    f1s = _f1_formula(precisions, recalls)
+    data = list(zip(recalls, precisions, thresholds, f1s))
     data = downsample_full_fidelity(data)
 
-    best_f1, arg_max_f1 = max_f1_score(precision, recall)
+    best_f1, arg_max_f1 = max_f1_score(precisions, recalls)
 
-    best_f1_recall = recall[arg_max_f1]
+    best_f1_recall = recalls[arg_max_f1]
     best_f1_threshold = thresholds[arg_max_f1]
-    return data, best_f1, best_f1_recall, best_f1_threshold
+    best_f1_precision = precisions[arg_max_f1]
+
+    return data, best_f1, best_f1_recall, best_f1_threshold, best_f1_precision
 
 
 def _log_extr_accuracy_wandb(target_extractions, all_max_scores, checkpoint_steps, collection_name):
@@ -112,7 +114,7 @@ def _extraction_baseline_random(targets):
 
     # Compute precision-recall curve for baselines (random and select all)
     random_scores = np.random.random_sample(len(targets))
-    data_rnd, _, _, _ = _get_pr_data(targets, random_scores)
+    data_rnd, _, _, _, _ = _get_pr_data(targets, random_scores)
 
     return data_rnd
 
@@ -122,12 +124,13 @@ def _micro_f1(all_extractions, all_max_scores):
     all_extractions_flat = np.array([x for sublist in all_extractions for x in sublist])
     all_max_scores_flat = np.array([x for sublist in all_max_scores for x in sublist])
 
-    data_max, best_f1, best_f1_recall, best_f1_threshold = _get_pr_data(all_extractions_flat, all_max_scores_flat)
+    data_max, best_f1, best_r, best_thr, best_p = _get_pr_data(all_extractions_flat, all_max_scores_flat)
 
     return {
         'best_f1': best_f1,
-        'best_f1_threshold': best_f1_threshold,
-        'recall_best_f1': best_f1_recall,
+        'best_f1_threshold': best_thr,
+        'recall_best_f1': best_r,
+        'precision_best_f1': best_p,
         'pr_data': data_max
     }
 
@@ -173,6 +176,7 @@ def pad_and_stack(sequences, pad_value=0):
 
 def _f1_formula(precision, recall):
     return 2 * (precision * recall) / (precision + recall + 1e-10)
+
 
 def _f1(threshold: float, t, predictions: np.array):
     """
@@ -275,6 +279,7 @@ def best_from_pr_data(pr_data):
     max_by_f1 = sorted(pr_data, key=lambda x: x['macro-F1'], reverse=True)[0]
     best_f1 = max_by_f1['macro-F1']
     recall_best_f1 = max_by_f1['Recall']
+    precision_best_f1 = max_by_f1['Precision']
     best_f1_threshold = max_by_f1['Threshold']
     # match sklearn format, with F1 score as 4th element
     pr_data = [(d['Recall'], d['Precision'], d['Threshold'], d['macro-F1']) for d in pr_data]
@@ -282,6 +287,7 @@ def best_from_pr_data(pr_data):
         'best_f1': best_f1,
         'best_f1_threshold': best_f1_threshold,
         'recall_best_f1': recall_best_f1,
+        'precision_best_f1': precision_best_f1,
         'pr_data': pr_data
     }
     return out
@@ -555,7 +561,6 @@ def convert_ndarrays(obj):
         return obj
 
 
-
 def predictions_from_results(extraction_results, no_positive_labels):
     predictions = [np.array(line['max_scores'])
                    for i, line in enumerate(extraction_results)
@@ -669,8 +674,10 @@ def add_dev_thresholded_f1s(all_pr_data):
         # because thresholds are midpoints between actual values
         first_larger = np.argmax(ts)
         f1 = pr_data[first_larger][3]  # [3] is f1 value
+        p = pr_data[first_larger][0]
+        r = pr_data[first_larger][1]
 
-        return f1
+        return f1, p, r
 
     # Find the best threshold on the dev set
     if 'official_dev_small' in all_pr_data:
@@ -693,22 +700,23 @@ def add_dev_thresholded_f1s(all_pr_data):
                 if cp_prs[f1_type] is None:
                     continue
 
-                # do not dev collection with dev threshold
-                if dataset_name == 'official_dev_small':
+                # Skip dev collection when using dev threshold
+                # or Skip if no threshold was found (nothing to do)
+                if dataset_name == "official_dev_small" or thr is None:
                     f1 = None
-
-                # no inference with dev dataset, no work to do
-                elif thr is None:
-                    f1 = None
+                    p = None
+                    r = None
 
                 # Only then do the thresholding
                 else:
-                    f1 = find_f1_by_threshold(
+                    f1, p, r = find_f1_by_threshold(
                         cp_prs[f1_type]['pr_data'],
                         thr
                     )
 
                 cp_prs[f1_type]['f1_dev_thresholded'] = f1
+                cp_prs[f1_type]['precision_f1_dev'] = p
+                cp_prs[f1_type]['recall_f1_dev'] = r
 
     return all_pr_data
 

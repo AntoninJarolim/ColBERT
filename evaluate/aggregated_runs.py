@@ -84,6 +84,21 @@ def log_aggregated_pr_data(best_pr_curves_data, extraction_id):
         fig_name = f'PR curve {collection} {extraction_id}'
         wandb_log_pr_curve(fig_name, data)
 
+def extract_scores(results) -> dict:
+    def safe_get(d, key):
+        return d[key] if d[key] else None
+
+    return {
+        'f1': safe_get(results, 'best_f1'),
+        'precision_f1': safe_get(results, 'precision_best_f1'),
+        'recall_f1': safe_get(results, 'recall_best_f1'),
+
+        'f1_dev': safe_get(results, 'f1_dev_thresholded'),
+        'precision_f1_dev': safe_get(results, 'precision_f1_dev'),
+        'recall_f1_dev': safe_get(results, 'recall_f1_dev'),
+    }
+
+
 
 def aggregated_f1_printing(best_pr_curves_data, group_name):
     # Prepare data for logging
@@ -98,23 +113,21 @@ def aggregated_f1_printing(best_pr_curves_data, group_name):
 
         collection = best_pr['collection_name']
 
-        def safe_get(d, key):
-            return d[key] if d[key] else None
-
         data[collection].append(
             {
                 'steps': best_pr['checkpoint_steps'],
                 'run_name': best_pr['run_name'],
-                'micro_f1': safe_get(best_pr['micro_results'], 'best_f1'),
-                'micro_f1_dev': safe_get(best_pr['micro_results'], 'f1_dev_thresholded'),
-                'macro_f1': safe_get(best_pr['macro_results'], 'best_f1'),
-                'macro_f1_dev': safe_get(best_pr['macro_results'], 'f1_dev_thresholded'),
+                'micro': extract_scores(best_pr['micro_results']),
+                'macro': extract_scores(best_pr['macro_results']),
             }
         )
 
     tables = []
     for collection_name, records in data.items():
-        df = pd.DataFrame(records)
+        # Json normalize, because 'micro' and 'macro' sub-dicts
+        df = pd.json_normalize(records, sep=".")
+        # json_normalize creates e.g. micro.f1, this will split it and create multiindex based on the split
+        df.columns = pd.MultiIndex.from_tuples(col.split(".") if "." in col else (col,) for col in df.columns)
         table_html = df.to_html(index=False, border=0)
         tables.append((collection_name, table_html))
 
