@@ -15,6 +15,7 @@ from colbert import Indexer
 from colbert.data import Queries
 from colbert.infra import Run, RunConfig, ColBERTConfig
 from colbert import Searcher
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from evaluate.aggregated_runs import aggregate_eval, get_dev_thresholded_filename
 from evaluate.extractions import update_extractions_figures, get_best_pr_data_by_f1, \
@@ -299,12 +300,22 @@ def parse_args():
         help='Whether to re-evaluate all found evaluation directories.'
     )
 
+    parser.add_argument(
+        '--allow_multiprocessing',
+        action='store_true',
+        default=True,
+        help='Whether to allow multiprocessing during re-evaluation.'
+    )
+
     args = parser.parse_args()
 
     if args.re_evaluate_all and args.checkpoint is not None:
         raise ValueError("Cannot use --checkpoint with --re_evaluate_all. Please choose one.")
 
     args.datasets = get_datasets(args.datasets_json, args.eval_datasets)
+
+    # Turn off multiprocessing if debugging
+    args.allow_multiprocessing = args.allow_multiprocessing and Run().config.is_debugging
     return args
 
 
@@ -439,25 +450,36 @@ def safe_eval_all(eval_dir, retrieval_datasets, run_name):
     except Exception as e:
         print(f"Error during re-evaluation of {eval_dir}: {e}", file=sys.stderr)
 
-def re_evaluate_all():
-    eval_dirs = find_all_results_dirs()
-    datasets = load_datasets("datasets.json")
+def re_evaluate_all(allow_multiprocessing=True):
 
-    retrieval_datasets = {k: v for k, v in datasets.items() if v['qrels_path'] is not None}
-
-    for eval_dir in tqdm(eval_dirs,
-                         desc="Re-evaluating all directories",
-                         total=len(eval_dirs)):
-        tqdm.write(f"Current dir: {eval_dir}")
-
+    def process_eval(eval_dir):
         run_name = run_name_from_path(eval_dir)
         wandb_connect_running(run_name)
-        tqdm.write(f"\nCurrent run name: {run_name}")
 
         # Run evaluation for all datasets with retrieval annotations
         safe_eval_all(eval_dir, retrieval_datasets, run_name)
 
         wandb.finish()
+        return run_name
+
+    eval_dirs = find_all_results_dirs()
+    datasets = load_datasets("datasets.json")
+
+    retrieval_datasets = {k: v for k, v in datasets.items() if v['qrels_path'] is not None}
+
+    if allow_multiprocessing:
+        with ProcessPoolExecutor(max_workers=4) as executor:  # adjust workers to your CPUs/GPUs
+            futures = {executor.submit(process_eval, d): d for d in eval_dirs}
+            for future in tqdm(as_completed(futures), total=len(futures), desc="Parallel evals"):
+                try:
+                    run_name = future.result()
+                    tqdm.write(f"Finished run: {run_name}")
+                except Exception as e:
+                    tqdm.write(f"Error in {futures[future]}: {e}")
+    else:
+        for eval_dir in tqdm(eval_dirs, desc="Re-evaluating all directories", total=len(eval_dirs)):
+            process_eval(eval_dir)
+
 
 
 def run_aggregate_results(save_all_experiments_stats, save_all_best_pr_curves):
