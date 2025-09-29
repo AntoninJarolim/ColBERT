@@ -40,7 +40,6 @@ def wandb_log_pr_curve(title, data, color_mapping=None, norm=None, cmap=None):
     if len(data[0]) == 3:
         columns = ["Recall", "Precision", "Type"]
     elif len(data[0]) == 4:
-        len(data[0]) == 3
         columns = ["Recall", "Precision", "Threshold", "Type"]
     else:
         raise ValueError("Data must have 3 or 4 columns")

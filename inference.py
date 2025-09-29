@@ -320,7 +320,7 @@ def load_run_extraction_results(evaluation_path):
         return None
 
 
-def aggregate_results(eval_dirs, save_all_experiments_stats, save_all_best_pr_curves, re_thresholding=True):
+def aggregate_results(eval_dirs, save_all_experiments_stats, save_all_best_pr_curves, re_thresholding=False):
     # Find the best checkpoint for each run
     # and save data needed to plot precision-recall curves
     best_pr_curves = []
@@ -341,7 +341,6 @@ def aggregate_results(eval_dirs, save_all_experiments_stats, save_all_best_pr_cu
 
         wandb_connect_running(run_name)
         all_pr_data = load_run_extraction_results(eval_dir)
-
 
         if all_pr_data is None:
             print(f"Warning: No extraction results found in {eval_dir}, skipping")

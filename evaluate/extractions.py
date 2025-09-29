@@ -69,7 +69,8 @@ def _get_pr_data(all_extractions, all_max_scores):
     )
 
     # Prepare data for wandb Table
-    data = list(zip(recall, precision, thresholds))
+    f1s = _f1_formula(precision, recall)
+    data = list(zip(recall, precision, thresholds, f1s))
     data = downsample_full_fidelity(data)
 
     best_f1, arg_max_f1 = max_f1_score(precision, recall)
@@ -113,11 +114,7 @@ def _extraction_baseline_random(targets):
     random_scores = np.random.random_sample(len(targets))
     data_rnd, _, _, _ = _get_pr_data(targets, random_scores)
 
-    df_random_data = []
-    for recall, precision, thr in data_rnd:
-        df_random_data.append((recall, precision, thr))
-
-    return df_random_data
+    return data_rnd
 
 
 def _micro_f1(all_extractions, all_max_scores):
@@ -174,6 +171,9 @@ def pad_and_stack(sequences, pad_value=0):
     ])
 
 
+def _f1_formula(precision, recall):
+    return 2 * (precision * recall) / (precision + recall + 1e-10)
+
 def _f1(threshold: float, t, predictions: np.array):
     """
     Compute precision, recall, F1 for a given threshold.
@@ -186,7 +186,8 @@ def _f1(threshold: float, t, predictions: np.array):
     FN = (t & ~p).sum()
     precision = TP / (TP + FP)
     recall = TP / (TP + FN)
-    f1 = 2 * (precision * recall) / (precision + recall + 1e-10)
+
+    f1 = _f1_formula(precision, recall)
 
     return precision, recall, f1
 
@@ -275,8 +276,8 @@ def best_from_pr_data(pr_data):
     best_f1 = max_by_f1['macro-F1']
     recall_best_f1 = max_by_f1['Recall']
     best_f1_threshold = max_by_f1['Threshold']
-    # match sklearn format
-    pr_data = [(d['Recall'], d['Precision'], d['Threshold']) for d in pr_data]
+    # match sklearn format, with F1 score as 4th element
+    pr_data = [(d['Recall'], d['Precision'], d['Threshold'], d['macro-F1']) for d in pr_data]
     out = {
         'best_f1': best_f1,
         'best_f1_threshold': best_f1_threshold,
@@ -319,20 +320,23 @@ def _f1_max_annotator(shared, threshold):
 def _macro_f1_data(collection_name, predictions, targets, thresholds):
     pr_data = []
     for t in tqdm(thresholds, desc=f"Computing macro F1 for collection-{collection_name}", total=len(thresholds)):
-        macro_precision, macro_recall, macro_f1 = _f1_batched(t, targets, predictions)
-
-        mean_pr, mean_rec, mean_f1 = np.mean(macro_precision), np.mean(macro_recall), np.mean(macro_f1)
 
         macro_precision_nb, macro_recall_nb, macro_f1_nb = f1_batched_numba(t, targets, predictions)
 
-        assert np.isclose(mean_f1, macro_f1_nb), f"F1 values do not match: {mean_f1} vs {macro_f1_nb}"
-        assert np.isclose(mean_pr, macro_precision_nb), f"Precision values do not match"
-        assert np.isclose(mean_rec, macro_recall_nb), f"Recall values do not match"
+        debugging = False
+        if debugging:
+            macro_precision, macro_recall, macro_f1 = _f1_batched(t, targets, predictions)
+            mean_pr, mean_rec, mean_f1 = np.mean(macro_precision), np.mean(macro_recall), np.mean(macro_f1)
+
+            assert np.isclose(mean_f1, macro_f1_nb), f"F1 values do not match: {mean_f1} vs {macro_f1_nb}"
+            assert np.isclose(mean_pr, macro_precision_nb), f"Precision values do not match"
+            assert np.isclose(mean_rec, macro_recall_nb), f"Recall values do not match"
+
         pr_data.append({
             "Threshold": t,
-            "Precision": mean_pr,
-            "Recall": mean_rec,
-            "macro-F1": mean_f1,
+            "Precision": macro_precision_nb,
+            "Recall": macro_recall_nb,
+            "macro-F1": macro_f1_nb,
         })
     return pr_data
 
@@ -340,7 +344,7 @@ def _macro_f1_data(collection_name, predictions, targets, thresholds):
 def _explode_by_type(pr_curves_by_cp):
     df_data = []
     for cp, pr_data in pr_curves_by_cp.items():
-        for recall, precision, thr in pr_data:
+        for recall, precision, thr, _ in pr_data:
             df_data.append((recall, precision, thr, f"Max-Values {cp}" if cp != "Random" else "Random"))
     return df_data
 
@@ -654,7 +658,7 @@ def add_dev_thresholded_f1s(all_pr_data):
 
     def find_f1_by_threshold(pr_data, threshold):
         """
-        data format: [(recall, precision, threshold), ...]
+        data format: [(recall, precision, threshold, f1), ...]
         """
         pr_data = sorted(pr_data, key=lambda x: x[2])
         # [2] is threshold
@@ -663,11 +667,9 @@ def add_dev_thresholded_f1s(all_pr_data):
         # Find first index where threshold is higher than requested threshold
         # nothing would change, if we recalculate with the exact threshold
         # because thresholds are midpoints between actual values
-        first = np.argmax(ts)
-        precision_first = pr_data[first][0]
-        recall_first = pr_data[first][1]
+        first_larger = np.argmax(ts)
+        f1 = pr_data[first_larger][3]  # [3] is f1 value
 
-        f1 = 2 * (precision_first * recall_first) / (precision_first + recall_first + 1e-10)
         return f1
 
     # Find the best threshold on the dev set

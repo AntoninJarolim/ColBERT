@@ -77,7 +77,7 @@ def log_aggregated_pr_data(best_pr_curves_data, extraction_id):
     for best_pr in best_pr_curves_data:
         name = f"{best_pr['run_name']} {best_pr['checkpoint_steps']}"
 
-        for p, r, _ in best_pr['macro_results']['pr_data']:
+        for p, r, _, _ in best_pr['macro_results']['pr_data']:
             collected_pr_data[best_pr['collection_name']].append((p, r, name))
     # Log the best PR curves
     for collection, data in collected_pr_data.items():
