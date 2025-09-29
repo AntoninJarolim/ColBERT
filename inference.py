@@ -17,8 +17,8 @@ from colbert.infra import Run, RunConfig, ColBERTConfig
 from colbert import Searcher
 
 from evaluate.aggregated_runs import aggregate_eval, get_dev_thresholded_filename
-from evaluate.extractions import update_extractions_figures, add_dev_thresholded_f1s, get_best_pr_data_by_f1, \
-    downsample_full_fidelity
+from evaluate.extractions import update_extractions_figures, get_best_pr_data_by_f1, \
+    downsample_full_fidelity, add_dev_thresholded_f1s
 from evaluate.retrieval import update_retrieval_figures, get_coll_agg_retrieval_data
 from evaluate.wandb_logging import wandb_connect_running
 
@@ -320,7 +320,7 @@ def load_run_extraction_results(evaluation_path):
         return None
 
 
-def aggregate_results(eval_dirs, save_all_experiments_stats, save_all_best_pr_curves):
+def aggregate_results(eval_dirs, save_all_experiments_stats, save_all_best_pr_curves, re_thresholding=True):
     # Find the best checkpoint for each run
     # and save data needed to plot precision-recall curves
     best_pr_curves = []
@@ -341,22 +341,30 @@ def aggregate_results(eval_dirs, save_all_experiments_stats, save_all_best_pr_cu
 
         wandb_connect_running(run_name)
         all_pr_data = load_run_extraction_results(eval_dir)
+
+
         if all_pr_data is None:
             print(f"Warning: No extraction results found in {eval_dir}, skipping")
             continue
+
+        # only if thresholding strategy changed, small compute time required
+        if re_thresholding:
+            all_pr_data = add_dev_thresholded_f1s(all_pr_data)
 
         if 'official_dev_small' not in all_pr_data:
             print(f"Warning: No 'official_dev_small' data found in {eval_dir}, skipping")
             continue
 
         try:
-            best_pr_data_dev_f1 = get_best_pr_data_by_f1(all_pr_data, f1_key='f1_dev_thresholded')
+            best_pr_data_dev_f1 = get_best_pr_data_by_f1(all_pr_data,
+                                                         'micro_results',
+                                                         f1_key='f1_dev_thresholded')
             best_pr_curves_dev_thresholded.extend(best_pr_data_dev_f1)
         except IndexError:
             print("Warning: No dev thresholded F1 available, skipping")
 
         # Just to log the best checkpoint CURVE for each run
-        best_pr_data = get_best_pr_data_by_f1(all_pr_data)
+        best_pr_data = get_best_pr_data_by_f1(all_pr_data,'micro_results')
         best_pr_curves.extend(best_pr_data)
 
         all_retrieval_data = get_coll_agg_retrieval_data(eval_dir)

@@ -319,12 +319,20 @@ def _f1_max_annotator(shared, threshold):
 def _macro_f1_data(collection_name, predictions, targets, thresholds):
     pr_data = []
     for t in tqdm(thresholds, desc=f"Computing macro F1 for collection-{collection_name}", total=len(thresholds)):
-        macro_precision, macro_recall, macro_f1 = f1_batched_numba(t, targets, predictions)
+        macro_precision, macro_recall, macro_f1 = _f1_batched(t, targets, predictions)
+
+        mean_pr, mean_rec, mean_f1 = np.mean(macro_precision), np.mean(macro_recall), np.mean(macro_f1)
+
+        macro_precision_nb, macro_recall_nb, macro_f1_nb = f1_batched_numba(t, targets, predictions)
+
+        assert np.isclose(mean_f1, macro_f1_nb), f"F1 values do not match: {mean_f1} vs {macro_f1_nb}"
+        assert np.isclose(mean_pr, macro_precision_nb), f"Precision values do not match"
+        assert np.isclose(mean_rec, macro_recall_nb), f"Recall values do not match"
         pr_data.append({
             "Threshold": t,
-            "Precision": macro_precision,
-            "Recall": macro_recall,
-            "macro-F1": macro_f1,
+            "Precision": mean_pr,
+            "Recall": mean_rec,
+            "macro-F1": mean_f1,
         })
     return pr_data
 
@@ -379,7 +387,7 @@ def find_all_thresholds(results_dict):
     return all_thresholds
 
 
-def eval_multi_ann_data_all_steps(files_by_coll):
+def eval_multi_ann_data_all_steps(files_by_coll, run_name):
     multi_ann_data = aggregate_multi_ann_data(files_by_coll)
 
     results_all = defaultdict(dict)
@@ -394,7 +402,21 @@ def eval_multi_ann_data_all_steps(files_by_coll):
         results_all[steps] = best_from_pr_data(pr_data)
 
     results_all = dict(results_all)
-    return results_all
+
+    # create output json
+    out = [
+        {
+            'checkpoint_steps': steps,
+            'data-name': f"Max-Values Checkpoint {steps}",
+            'run_name': run_name,
+            'targets': None,  # not used for multi-annotator
+            'micro_results': None,  # not used for multi-annotator
+            'macro_results': values
+        }
+        for steps, values in results_all.items()
+    ]
+
+    return out
 
 
 def eval_multi_ann_data(shared_data, unique_data, thrs):
@@ -448,19 +470,6 @@ def update_extractions_figures(evaluation_dir, run_name):
 
     all_pr_data = defaultdict(list)
 
-    multiann_data = eval_multi_ann_data_all_steps(files_by_coll)
-    all_pr_data['human_explained_shared'] = [
-        {
-            'checkpoint_steps': steps,
-            'data-name': f"Max-Values Checkpoint {steps}",
-            'run_name': run_name,
-            'targets': None,  # not used for multi-annotator
-            'micro_results': None,  # not used for multi-annotator
-            'macro_results': values
-        }
-        for steps, values in multiann_data.items()
-    ]
-
     for collection_name, files_to_eval in files_by_coll.items():
 
         # Add random baseline - first get targets - it is the same for all checkpoints, so just use the first
@@ -491,6 +500,8 @@ def update_extractions_figures(evaluation_dir, run_name):
                     'macro_results': macro_results
                 }
             )
+
+    all_pr_data['human_explained_shared'] = eval_multi_ann_data_all_steps(files_by_coll, run_name)
 
     for collection_name, entries in all_pr_data.items():
         for zoom in ["micro", "macro"]:
@@ -578,7 +589,7 @@ def _agg_files_by_collection(evaluation_dir, pattern):
                 }
             )
     files_by_coll = {
-        k: sorted(v, key=lambda x: x['steps'])
+        k: sorted(v, key=lambda x: x['steps'], reverse=True)
         for k, v in files_by_coll.items()
     }
     return files_by_coll
@@ -628,61 +639,95 @@ def _log_f1_scores_wandb(f1_scores):
 
 
 def add_dev_thresholded_f1s(all_pr_data):
-    def find_best_dev_threshold(all_pr_data):
-        best_f1s = get_best_pr_data_by_f1(all_pr_data)
-        dev_f1 = [best_f1 for best_f1 in best_f1s if best_f1['collection_name'] == 'official_dev_small'][0]
-        dev_f1_threshold = dev_f1['macro_results']['best_f1_threshold']
-        return dev_f1_threshold
+    def find_best_dev_threshold(all_pr_data, f1_type):
+        f1_type = f'{f1_type}_results'
+
+        # Find the best threshold by (macro or micro) f1 on the dev set
+        best_f1_res = get_best_pr_data_by_f1(all_pr_data, f1_type)[0]
+
+        # Check that we are indeed finding the dev set
+        assert best_f1_res['collection_name'] == 'official_dev_small', \
+            "Finding dev threshold failed"
+
+        # Return only the threshold
+        return best_f1_res[f1_type]['best_f1_threshold']
 
     def find_f1_by_threshold(pr_data, threshold):
-        ds = []
+        """
+        data format: [(recall, precision, threshold), ...]
+        """
+        pr_data = sorted(pr_data, key=lambda x: x[2])
+        # [2] is threshold
+        ts = np.array([x[2] for x in pr_data]) > threshold
 
-        for p, r, t in pr_data:
-            ds.append((p, r, t))
-
-        ds = sorted(ds, key=lambda x: x[2])
-        ts = np.array([x[2] for x in ds]) > threshold
+        # Find first index where threshold is higher than requested threshold
+        # nothing would change, if we recalculate with the exact threshold
+        # because thresholds are midpoints between actual values
         first = np.argmax(ts)
-        recall_first = ds[first][1]
-        precision_first = ds[first][0]
+        precision_first = pr_data[first][0]
+        recall_first = pr_data[first][1]
 
-        # compute F1 score
-        return 2 * (precision_first * recall_first) / (precision_first + recall_first + 1e-10)
+        f1 = 2 * (precision_first * recall_first) / (precision_first + recall_first + 1e-10)
+        return f1
 
-    try:
-        dev_f1_threshold = find_best_dev_threshold(all_pr_data)
-    except IndexError:
+    # Find the best threshold on the dev set
+    if 'official_dev_small' in all_pr_data:
+        # Get only the dev set data
+        dev_prs = dict(official_dev_small=all_pr_data['official_dev_small'])
+        micro_thr = find_best_dev_threshold(dev_prs, 'micro')
+        macro_thr = find_best_dev_threshold(dev_prs, 'macro')
+    else:
         print("Warning: No development data found. Skipping thresholding.")
-        dev_f1_threshold = None
+        micro_thr = None
+        macro_thr = None
 
-    new_data = defaultdict(list)
+    # use the threshold to find the f1 score for all other datasets
     for dataset_name, all_checkpoints_prs in all_pr_data.items():
-        if dataset_name == 'official_dev_small':
-            continue
-
         # For all checkpoint pr data
         for cp_prs in all_checkpoints_prs:
 
-            if dev_f1_threshold is None:
-                f1 = None
-            else:
-                f1 = find_f1_by_threshold(cp_prs['macro_results']['pr_data'], dev_f1_threshold)
+            for f1_type, thr in [('micro_results', micro_thr), ('macro_results', macro_thr)]:
+                # No PR data to be thresholded
+                if cp_prs[f1_type] is None:
+                    continue
 
-            f1_updated_sample = {
-                'f1_dev_thresholded': f1,
-                **cp_prs
-            }
-            new_data[dataset_name].append(f1_updated_sample)
+                # do not dev collection with dev threshold
+                if dataset_name == 'official_dev_small':
+                    f1 = None
 
-    return new_data
+                # no inference with dev dataset, no work to do
+                elif thr is None:
+                    f1 = None
+
+                # Only then do the thresholding
+                else:
+                    f1 = find_f1_by_threshold(
+                        cp_prs[f1_type]['pr_data'],
+                        thr
+                    )
+
+                cp_prs[f1_type]['f1_dev_thresholded'] = f1
+
+    return all_pr_data
 
 
-def get_best_pr_data_by_f1(all_pr_data, f1_key='best_f1'):
+def get_best_pr_data_by_f1(all_pr_data, f1_type, f1_key='best_f1'):
+    assert f1_type in ['micro_results', 'macro_results'], \
+        "f1_type must be 'micro_results' or 'macro_results'"
+
+    def get_f1_key(x):
+        if x[f1_type] is not None:
+            return x[f1_type][f1_key]
+        return None
+
     # Remove f1_key that equals None (so sorting works)
-    all_pr_data = {k: [v for v in v if v['macro_results'][f1_key] is not None] for k, v in all_pr_data.items()}
+    all_pr_data = {k: [v for v in v if get_f1_key(v) is not None] for k, v in all_pr_data.items()}
+
+    # Filter empty value lists
+    all_pr_data = {k: v for k, v in all_pr_data.items() if len(v) > 0}
 
     # Sort by f1_key and get the best one
-    best_pr_curves = {k: sorted(v, key=lambda x: x['macro_results'][f1_key], reverse=True)[0] for k, v in
+    best_pr_curves = {k: sorted(v, key=get_f1_key, reverse=True)[0] for k, v in
                       all_pr_data.items()}
 
     # reshape 'collection: [{data}, {data}]' to 'collection: {data}', as we only have one best

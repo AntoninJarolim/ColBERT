@@ -130,3 +130,7 @@ def wandb_log_retrieval_figs(file_datas):
                                                                       title="MRR@10 over steps")})
         wandb.log({f"recall@50_steps_{collection_name}": wandb.plot.line(tab, "batch_steps", "recall@50",
                                                                          title="Recall@50 over steps")})
+
+
+def log_wandb_table(html, name):
+    wandb.log({name: wandb.Html(html)})

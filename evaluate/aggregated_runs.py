@@ -3,11 +3,11 @@ from jsonlines import jsonlines
 from evaluate.wandb_logging import (
     wandb_log_pr_curve,
     wandb_connect_running,
-    wandb_log_figure
+    wandb_log_figure, log_wandb_table
 )
 
 from collections import defaultdict
-
+from jinja2 import Template
 from matplotlib import pyplot as plt
 import pandas as pd
 import seaborn as sns
@@ -61,19 +61,15 @@ def aggregate_eval(save_all_experiments_stats, save_all_best_pr_curves):
         filtered_pr_curves = filter_group(best_pr_curves, group_filter)
         filtered_pr_curves_dev_thr = filter_group(best_pr_curves_dev_thr, group_filter)
 
-        log_pareto_optimal_solutions(filtered_stats, group_name)
+        log_pareto_optimal_solutions(filtered_stats, group_name, 'best_f1_macro')
+        log_pareto_optimal_solutions(filtered_stats, group_name, 'best_f1_micro')
         aggregated_extraction_eval(filtered_pr_curves, group_name)
         # log_best_pr_curve_wandb(filtered_pr_curves_dev_thr, group_name, 'dev threshold')
 
 
-def aggregated_extraction_eval(best_pr_curves_data, extraction_id):
-    """
-    Prints F1 scores and creates PR curves
-    parameters:
-     - extraction_id:
-    """
-    aggregated_f1_printing(best_pr_curves_data)
-    log_aggregated_pr_data(best_pr_curves_data, extraction_id)
+def aggregated_extraction_eval(best_pr_curves_data, group_name):
+    aggregated_f1_printing(best_pr_curves_data, group_name)
+    log_aggregated_pr_data(best_pr_curves_data, group_name)
 
 
 def log_aggregated_pr_data(best_pr_curves_data, extraction_id):
@@ -81,7 +77,7 @@ def log_aggregated_pr_data(best_pr_curves_data, extraction_id):
     for best_pr in best_pr_curves_data:
         name = f"{best_pr['run_name']} {best_pr['checkpoint_steps']}"
 
-        for p, r, _, _ in best_pr['pr_data']:
+        for p, r, _ in best_pr['macro_results']['pr_data']:
             collected_pr_data[best_pr['collection_name']].append((p, r, name))
     # Log the best PR curves
     for collection, data in collected_pr_data.items():
@@ -89,42 +85,55 @@ def log_aggregated_pr_data(best_pr_curves_data, extraction_id):
         wandb_log_pr_curve(fig_name, data)
 
 
-def aggregated_f1_printing(best_pr_curves_data):
-    # Save the best PR curves
-    print("\n\n Extraction aggregated f1 results:")
-    all_f1_data = defaultdict(list)
-    all_f1_data_dev_thr = defaultdict(list)
+def aggregated_f1_printing(best_pr_curves_data, group_name):
     # Prepare data for logging
+    data = defaultdict(list)
     for best_pr in best_pr_curves_data:
-        name = f"{best_pr['run_name']} {best_pr['checkpoint_steps']}"
 
-        all_f1_data[best_pr['collection_name']].append((best_pr['best_f1'], best_pr['recall_best_f1'], name))
+        if best_pr['collection_name'] in [
+            '35_samples', 'human_explained_0', 'human_explained_1', 'human_explained_2',
+            'accuracy_dataset_pos', 'accuracy_dataset_neg', 'md2d-sample'
+        ]:
+            continue
 
-        if best_pr['f1_dev_thresholded'] is not None:
-            all_f1_data_dev_thr[best_pr['collection_name']].append((best_pr['f1_dev_thresholded'], None, name))
-    # Print the best F1 scores
-    print_best_f1_scores(all_f1_data, mode="best")
-    # Print the best F1 scores dev thresholded
-    print_best_f1_scores(all_f1_data_dev_thr, mode="dev")
+        collection = best_pr['collection_name']
+
+        def safe_get(d, key):
+            return d[key] if d[key] else None
+
+        data[collection].append(
+            {
+                'steps': best_pr['checkpoint_steps'],
+                'run_name': best_pr['run_name'],
+                'micro_f1': safe_get(best_pr['micro_results'], 'best_f1'),
+                'micro_f1_dev': safe_get(best_pr['micro_results'], 'f1_dev_thresholded'),
+                'macro_f1': safe_get(best_pr['macro_results'], 'best_f1'),
+                'macro_f1_dev': safe_get(best_pr['macro_results'], 'f1_dev_thresholded'),
+            }
+        )
+
+    tables = []
+    for collection_name, records in data.items():
+        df = pd.DataFrame(records)
+        table_html = df.to_html(index=False, border=0)
+        tables.append((collection_name, table_html))
+
+    create_html_table_for_f1_scores(tables, group_name)
 
 
-def print_best_f1_scores(all_f1_data, mode="best"):
-    """
-    Print best F1 scores for collections.
-    """
-    assert mode in ["best", "dev"], "mode must be either 'best' or 'dev'"
 
-    for collection, f1_data in all_f1_data.items():
-        print(f"Best F1 score for {collection} thresholded by {mode}:")
-        f1_data = sorted(f1_data, key=lambda x: x[0], reverse=True)
+def create_html_table_for_f1_scores(tables, group_name):
+    template_filename = "visualizations/f1_table.html"
+    with open(template_filename) as f:
+        template = Template(f.read())
 
-        if mode == "best":
-            for f1, recall_best_f1, name in f1_data:
-                print(f"\t{name}: {f1:.4f} - at recall {recall_best_f1:.4f}")
+    title = f"Aggregated F1 Scores for group {group_name}"
+    html = template.render(tables=tables, title=title)
 
-        else:
-            for f1, _, name in f1_data:
-                print(f"\t{name}: {f1:.4f}")
+    with open("experiments/eval/f1-agg-table.html", "w") as f:
+        f.write(html)
+
+    log_wandb_table(html, title)
 
 
 def mark_pareto_front(data, x_key='best_f1', y_key='recall@10'):
@@ -146,8 +155,8 @@ def mark_pareto_front(data, x_key='best_f1', y_key='recall@10'):
     return pareto
 
 
-def log_pareto_optimal_solutions(combined_stats_all, group_name):
-    combined_stats_all = mark_pareto_front(combined_stats_all)
+def log_pareto_optimal_solutions(combined_stats_all, group_name, x_key='best_f1_micro'):
+    combined_stats_all = mark_pareto_front(combined_stats_all, x_key=x_key)
     df = pd.DataFrame(combined_stats_all)
 
     # Normalize steps for opacity (alpha)
@@ -159,13 +168,17 @@ def log_pareto_optimal_solutions(combined_stats_all, group_name):
     # df['marker'] = df['is_pareto_optimal'].map({True: 'x', False: 'o'})
 
     # Plot
-    rename_map = {'best_f1': 'best extraction f1', 'is_pareto_optimal': 'Is pareto optimal'}
+    rename_map = {
+        'best_f1_micro': 'best extraction f1 micro',
+        'best_f1_macro': 'best extraction f1 macro',
+        'is_pareto_optimal': 'Is pareto optimal'
+    }
     df.rename(columns=rename_map, inplace=True)
 
     fig, ax = plt.subplots(figsize=(10, 6), dpi=200)
     sns.scatterplot(
         data=df,
-        x='best extraction f1',
+        x=rename_map.get(x_key, x_key),
         y='recall@10',
         hue='run_name',
         size='Training progress',
