@@ -33,13 +33,12 @@
     </div>
   {% endfor %}
 
-<script>
-function parseCell(text) {
+<script>function parseCell(text) {
   const num = Number(text.replace(/,/g, ''));
   return isNaN(num) ? text.toLowerCase() : num;
 }
 
-function sortTable(table, colIndex, desc=false) {
+function sortTable(table, colIndex, desc = false) {
   const tbody = table.tBodies[0];
   const rows = Array.from(tbody.querySelectorAll('tr'));
   rows.sort((a, b) => {
@@ -51,21 +50,37 @@ function sortTable(table, colIndex, desc=false) {
   });
   rows.forEach(r => tbody.appendChild(r));
 
-  table.querySelectorAll('th').forEach(th => th.classList.remove('sort-asc','sort-desc'));
-  const target = table.querySelectorAll('th')[colIndex];
+  // remove old arrows only from second header row
+  table.querySelectorAll('thead tr:nth-child(2) th')
+       .forEach(th => th.classList.remove('sort-asc','sort-desc'));
+
+  // add arrow to clicked header
+  const target = table.querySelectorAll('thead tr:nth-child(2) th')[colIndex];
   target.classList.add(desc ? 'sort-desc' : 'sort-asc');
 }
 
 function attachSortingAndColoring(table) {
-  const headers = table.querySelectorAll('th');
+  // style first header row
+  const topHeaders = table.querySelectorAll('thead tr:first-child th');
+  topHeaders.forEach(th => {
+    th.style.backgroundColor = "#f5f5f5"; // light gray
+    th.style.textAlign = "center";
+    th.style.fontWeight = "bold";
+    th.style.cursor = "default"; // not clickable
+  });
+
+  // only second row headers get sorting
+  const headers = table.querySelectorAll('thead tr:nth-child(2) th');
   headers.forEach((th, idx) => {
     let desc = false;
+    th.style.cursor = "pointer"; // clickable
     th.addEventListener('click', () => {
       desc = !desc;
       sortTable(table, idx, desc);
-      colorizeNumericColumns(table); // recolor after sorting
+      colorizeNumericColumns(table);
     });
   });
+
   // initial coloring
   colorizeNumericColumns(table);
 }
@@ -74,7 +89,7 @@ function colorizeNumericColumns(table) {
   const rows = Array.from(table.tBodies[0].rows);
   if (!rows.length) return;
 
-  const numCols = table.rows[0].cells.length;
+  const numCols = table.rows[1].cells.length;
 
   for (let col = 0; col < numCols; col++) {
     let values = rows.map(r => Number(r.cells[col].innerText));
@@ -86,21 +101,20 @@ function colorizeNumericColumns(table) {
     rows.forEach(r => {
       let val = Number(r.cells[col].innerText);
       if (isNaN(val)) return;
-      let ratio = (val - min) / (max - min + 1e-9); // 0 → 1
+      let ratio = (val - min) / (max - min + 1e-9);
 
-      // Simple red→green gradient in HSL
-      let hue = 0 + 120 * ratio;   // 0=red, 120=green
+      let hue = 0 + 120 * ratio; // red → green
       r.cells[col].style.backgroundColor = `hsl(${hue}, 70%, 80%)`;
     });
   }
 }
-
 
 window.addEventListener('DOMContentLoaded', () => {
   document.querySelectorAll('table').forEach(table => {
     attachSortingAndColoring(table);
   });
 });
+
 </script>
 </body>
 </html>

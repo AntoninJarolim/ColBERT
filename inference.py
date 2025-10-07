@@ -4,6 +4,7 @@ import json
 import os.path
 import sys
 import time
+import traceback
 from datetime import timedelta
 
 from datasets import tqdm
@@ -350,6 +351,7 @@ def aggregate_results(eval_dirs, save_all_experiments_stats, save_all_best_pr_cu
 
         time_before = time.time()
 
+        wandb.finish()
         wandb_connect_running(run_name)
         all_pr_data = load_run_extraction_results(eval_dir)
 
@@ -367,14 +369,14 @@ def aggregate_results(eval_dirs, save_all_experiments_stats, save_all_best_pr_cu
 
         try:
             best_pr_data_dev_f1 = get_best_pr_data_by_f1(all_pr_data,
-                                                         'micro_results',
+                                                         'macro_results',
                                                          f1_key='f1_dev_thresholded')
             best_pr_curves_dev_thresholded.extend(best_pr_data_dev_f1)
         except IndexError:
             print("Warning: No dev thresholded F1 available, skipping")
 
         # Just to log the best checkpoint CURVE for each run
-        best_pr_data = get_best_pr_data_by_f1(all_pr_data,'micro_results')
+        best_pr_data = get_best_pr_data_by_f1(all_pr_data,'macro_results')
         best_pr_curves.extend(best_pr_data)
 
         all_retrieval_data = get_coll_agg_retrieval_data(eval_dir)
@@ -448,28 +450,29 @@ def safe_eval_all(eval_dir, retrieval_datasets, run_name):
         update_extractions_figures(eval_dir, run_name)
 
     except Exception as e:
-        print(f"Error during re-evaluation of {eval_dir}: {e}", file=sys.stderr)
+        tb = traceback.format_exc()
+        print(f"Error during re-evaluation of {eval_dir}: {e}\n{tb}", file=sys.stderr)
+
+def process_eval(eval_dir, retrieval_datasets):
+    print(f"[DEBUG] Starting eval for", flush=True)
+    run_name = run_name_from_path(eval_dir)
+    wandb_connect_running(run_name)
+
+    # Run evaluation for all datasets with retrieval annotations
+    safe_eval_all(eval_dir, retrieval_datasets, run_name)
+
+    wandb.finish()
+    return run_name
 
 def re_evaluate_all(allow_multiprocessing=True):
-
-    def process_eval(eval_dir):
-        run_name = run_name_from_path(eval_dir)
-        wandb_connect_running(run_name)
-
-        # Run evaluation for all datasets with retrieval annotations
-        safe_eval_all(eval_dir, retrieval_datasets, run_name)
-
-        wandb.finish()
-        return run_name
-
     eval_dirs = find_all_results_dirs()
     datasets = load_datasets("datasets.json")
 
     retrieval_datasets = {k: v for k, v in datasets.items() if v['qrels_path'] is not None}
 
     if allow_multiprocessing:
-        with ProcessPoolExecutor(max_workers=4) as executor:  # adjust workers to your CPUs/GPUs
-            futures = {executor.submit(process_eval, d): d for d in eval_dirs}
+        with ProcessPoolExecutor() as executor:
+            futures = {executor.submit(process_eval, d, retrieval_datasets): d for d in eval_dirs}
             for future in tqdm(as_completed(futures), total=len(futures), desc="Parallel evals"):
                 try:
                     run_name = future.result()
@@ -478,7 +481,7 @@ def re_evaluate_all(allow_multiprocessing=True):
                     tqdm.write(f"Error in {futures[future]}: {e}")
     else:
         for eval_dir in tqdm(eval_dirs, desc="Re-evaluating all directories", total=len(eval_dirs)):
-            process_eval(eval_dir)
+            process_eval(eval_dir, retrieval_datasets)
 
 
 

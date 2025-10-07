@@ -199,10 +199,11 @@ def _f1(threshold: float, t, predictions: np.array):
 @njit
 def f1_batched_numba(threshold, t, predictions):
     B, L = t.shape
-    f1_sum = 0.0
-    prec_sum = 0.0
-    rec_sum = 0.0
 
+    precision = np.full(B, np.nan)
+    recall = np.full(B, np.nan)
+
+    # fill precision and recall
     for i in range(B):
         TP = 0
         FP = 0
@@ -217,19 +218,16 @@ def f1_batched_numba(threshold, t, predictions):
             elif not pred and true:
                 FN += 1
 
-        precision = TP / (TP + FP) if TP + FP > 0 else 0.0
-        recall = TP / (TP + FN) if TP + FN > 0 else 0.0
-        f1 = 2 * precision * recall / (precision + recall + 1e-10)
+        if TP + FP > 0:
+            precision[i] = TP / (TP + FP)
+        if TP + FN > 0:
+            recall[i] = TP / (TP + FN)
 
-        f1_sum += f1
-        prec_sum += precision
-        rec_sum += recall
+    # vectorized F1 (NumPy style, but numba supports elementwise ops)
+    f1 = 2 * (precision * recall) / (precision + recall + 1e-10)
 
-    macro_precision = prec_sum / B
-    macro_recall = rec_sum / B
-    macro_f1 = f1_sum / B
+    return precision, recall, f1
 
-    return macro_precision, macro_recall, macro_f1
 
 
 def _f1_batched(threshold, t, predictions: np.array):
@@ -246,11 +244,10 @@ def _f1_batched(threshold, t, predictions: np.array):
     FN = (t & ~p).sum(-1)
 
     # Initialize precision and recall arrays with zeros
-    precision = np.zeros_like(TP, dtype=float)
-    recall = np.zeros_like(TP, dtype=float)
+    precision = np.full_like(TP, np.nan, dtype=float)
+    recall = np.full_like(TP, np.nan, dtype=float)
 
     # Mask for division without warning if denominator is 0
-    # zeroes_like -> default values are 0
     mask_prec = TP + FP > 0
     mask_rec = TP + FN > 0
 
@@ -294,31 +291,58 @@ def best_from_pr_data(pr_data):
 
 
 def _f1_max_annotator(shared, threshold):
-    no_positive_labels, targets, targets_b = targets_from_results(shared[0], "human_explained_shared")
-    nr_samples = len(targets)
+    def union_positive_labels():
+        labels = []
+        for ann_id, annotator_data in enumerate(shared):
+            no_positive_labels, _, _ = targets_from_results(annotator_data, "human_explained_shared")
+            labels.extend(no_positive_labels)
+        return labels
+
+    no_positive_labels = union_positive_labels()
+    nr_samples = len(shared[0]) - len(no_positive_labels)
     nr_annotators = len(shared)
 
     annotator_precisions = np.zeros((nr_annotators, nr_samples))
     annotator_recalls = np.zeros((nr_annotators, nr_samples))
     annotator_f1s = np.zeros((nr_annotators, nr_samples))
 
+    # Predictions are always the same for all annotators, only gt labels changes
+    predictions, predictions_b = predictions_from_results(shared[0], no_positive_labels)
     for ann_id, annotator_data in enumerate(shared):
-        predictions, predictions_b = predictions_from_results(annotator_data, no_positive_labels)
+        # Targets differ for each annotator
+        _, targets, targets_b = targets_from_results(
+            annotator_data,
+            "human_explained_shared",
+            no_positive_labels
+        )
 
         precision, recall, f1 = _f1_batched(threshold, targets_b, predictions_b)
         annotator_precisions[ann_id] = precision
         annotator_recalls[ann_id] = recall
         annotator_f1s[ann_id] = f1
 
-    f1s_max_idxs = annotator_f1s.argmax(axis=0)
+    def safe_nanmax(arr, axis):
+        assert axis == 0, "probably does not work for other axis lol"
+        argmax = np.zeros((arr.shape[-1]), dtype=int)
+        # at least one non-nan
+        pos_indices = np.sum(np.isnan(arr), axis=axis) < arr.shape[axis]
+        # Get argmax in those and Fill with zeroes otherwise
+        argmax[pos_indices] = np.nanargmax(arr[:, pos_indices], axis=axis)
+        return argmax
 
-    f1s_maxed = annotator_f1s[f1s_max_idxs, :]
-    precisions_maxed = annotator_precisions[f1s_max_idxs, :]
-    recalls_maxed = annotator_recalls[f1s_max_idxs, :]
+    f1s_max_idxs = safe_nanmax(annotator_f1s, axis=0)
 
-    macro_precision = precisions_maxed.mean()
-    macro_recall = recalls_maxed.mean()
-    macro_f1 = f1s_maxed.mean()
+    cols = np.arange(annotator_f1s.shape[1])  # To select all samples
+    f1s_maxed = annotator_f1s[f1s_max_idxs, cols]
+    precisions_maxed = annotator_precisions[f1s_max_idxs, cols]
+    recalls_maxed = annotator_recalls[f1s_max_idxs, cols]
+
+    if np.all(np.isnan(f1s_maxed)) or np.all(np.isnan(precisions_maxed)):
+        return None, None, None
+
+    macro_precision = np.nanmean(precisions_maxed)
+    macro_recall = np.nanmean(recalls_maxed)
+    macro_f1 = np.nanmean(f1s_maxed)
 
     return macro_precision, macro_recall, macro_f1
 
@@ -327,22 +351,26 @@ def _macro_f1_data(collection_name, predictions, targets, thresholds):
     pr_data = []
     for t in tqdm(thresholds, desc=f"Computing macro F1 for collection-{collection_name}", total=len(thresholds)):
 
-        macro_precision_nb, macro_recall_nb, macro_f1_nb = f1_batched_numba(t, targets, predictions)
+        precision_nb, recall_nb, f1_nb = f1_batched_numba(t, targets, predictions)
+        pr_nb_mean = np.nanmean(precision_nb)
+        rec_nb_mean = np.nanmean(recall_nb)
+        f1_nb_mean = np.nanmean(f1_nb)
 
         debugging = False
         if debugging:
-            macro_precision, macro_recall, macro_f1 = _f1_batched(t, targets, predictions)
-            mean_pr, mean_rec, mean_f1 = np.mean(macro_precision), np.mean(macro_recall), np.mean(macro_f1)
+            precision, recall, f1 = _f1_batched(t, targets, predictions)
+            mean_f1, mean_pr, mean_rec = np.nanmean(f1), np.nanmean(precision), np.nanmean(recall)
 
-            assert np.isclose(mean_f1, macro_f1_nb), f"F1 values do not match: {mean_f1} vs {macro_f1_nb}"
-            assert np.isclose(mean_pr, macro_precision_nb), f"Precision values do not match"
-            assert np.isclose(mean_rec, macro_recall_nb), f"Recall values do not match"
+            assert not np.any(np.isnan(recall))
+            assert np.isclose(pr_nb_mean, mean_pr), f"Precision values do not match {mean_pr} vs {pr_nb_mean}"
+            assert np.isclose(rec_nb_mean, mean_rec), f"Recall values do not match {mean_rec} vs {rec_nb_mean}"
+            assert np.isclose(f1_nb_mean, mean_f1), f"F1 values do not match: {mean_f1} vs {f1_nb_mean}"
 
         pr_data.append({
             "Threshold": t,
-            "Precision": macro_precision_nb,
-            "Recall": macro_recall_nb,
-            "macro-F1": macro_f1_nb,
+            "Precision": pr_nb_mean,
+            "Recall": rec_nb_mean,
+            "macro-F1": f1_nb_mean,
         })
     return pr_data
 
@@ -442,6 +470,10 @@ def eval_multi_ann_data(shared_data, unique_data, thrs):
         pr_data = []
         for threshold in tqdm(thrs, desc="Computing macro F1 for shared annotations", total=len(thrs)):
             precision, recall, macro_f1 = _f1_max_annotator(shared, threshold)
+
+            if macro_f1 is None:
+                continue
+
             pr_data.append({
                 'Threshold': threshold,
                 'Precision': precision,
@@ -479,6 +511,7 @@ def update_extractions_figures(evaluation_dir, run_name):
     files_by_coll = _agg_files_by_collection(evaluation_dir, pattern)
 
     all_pr_data = defaultdict(list)
+    all_pr_data['human_explained_shared'] = eval_multi_ann_data_all_steps(files_by_coll, run_name)
 
     for collection_name, files_to_eval in files_by_coll.items():
 
@@ -511,7 +544,6 @@ def update_extractions_figures(evaluation_dir, run_name):
                 }
             )
 
-    all_pr_data['human_explained_shared'] = eval_multi_ann_data_all_steps(files_by_coll, run_name)
 
     for collection_name, entries in all_pr_data.items():
         for zoom in ["micro", "macro"]:
@@ -569,13 +601,14 @@ def predictions_from_results(extraction_results, no_positive_labels):
     return predictions, predictions_b
 
 
-def targets_from_results(collection_extractions, collection_name):
+def targets_from_results(collection_extractions, collection_name, no_positive_labels=None):
     targets = [
         np.array(line['extraction_binary'], dtype=bool)
         for line in collection_extractions
     ]
     # Find targets with no positive labels
-    no_positive_labels = find_no_positive_labels(collection_name, targets)
+    if no_positive_labels is None:
+        no_positive_labels = find_no_positive_labels(collection_name, targets)
     # Remove targets with no positive labels
     targets = [t for i, t in enumerate(targets) if i not in no_positive_labels]
     targets_b = pad_and_stack(targets, pad_value=0)
