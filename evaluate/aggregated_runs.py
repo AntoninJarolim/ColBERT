@@ -86,6 +86,8 @@ def log_aggregated_pr_data(best_pr_curves_data, extraction_id):
 
 def extract_scores(results) -> dict:
     def safe_get(d, key):
+        if d is None:
+            return None
         return d[key] if d[key] else None
 
     return {
